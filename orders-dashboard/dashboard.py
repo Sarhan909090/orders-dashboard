@@ -204,37 +204,36 @@ tab_orders, tab_kpi, tab_dot = st.tabs(["Orders", "Delivery KPI", "DOT Orders"])
 # TAB 1 — ORDERS
 # ════════════════════════════════════════════════════════════════════════════
 with tab_orders:
-    st.sidebar.header("Filters")
+    with st.expander("🔽 Filters", expanded=False):
+        orders_view = st.radio(
+            "Period", ["Weekly", "Monthly", "Yearly", "All Time"],
+            horizontal=True, key="orders_view",
+        )
 
-    orders_view = st.sidebar.radio(
-        "Period", ["Weekly", "Monthly", "Yearly", "All Time"],
-        horizontal=False, key="orders_view",
-    )
-
-    if orders_view == "Weekly":
-        weeks_available = sorted(df["Week"].dropna().unique(), reverse=True)
-        sel_orders_week = st.sidebar.selectbox(
-            "Select Week",
-            options=weeks_available,
-            format_func=lambda w: (
-                f"{pd.Timestamp(w).strftime('%d %b %Y')} – "
-                f"{(pd.Timestamp(w) + pd.Timedelta(days=5)).strftime('%d %b %Y')}"
-            ),
-            key="orders_week",
-        )
-    elif orders_view == "Monthly":
-        months_available = sorted(df["Month"].dropna().unique(), reverse=True)
-        sel_orders_month = st.sidebar.selectbox(
-            "Select Month",
-            options=months_available,
-            format_func=lambda m: pd.Timestamp(m).strftime("%b %Y"),
-            key="orders_month",
-        )
-    elif orders_view == "Yearly":
-        years_available = sorted(df["Year"].dropna().unique(), reverse=True)
-        sel_orders_year = st.sidebar.selectbox(
-            "Select Year", options=years_available, key="orders_year",
-        )
+        if orders_view == "Weekly":
+            weeks_available = sorted(df["Week"].dropna().unique(), reverse=True)
+            sel_orders_week = st.selectbox(
+                "Select Week",
+                options=weeks_available,
+                format_func=lambda w: (
+                    f"{pd.Timestamp(w).strftime('%d %b %Y')} – "
+                    f"{(pd.Timestamp(w) + pd.Timedelta(days=5)).strftime('%d %b %Y')}"
+                ),
+                key="orders_week",
+            )
+        elif orders_view == "Monthly":
+            months_available = sorted(df["Month"].dropna().unique(), reverse=True)
+            sel_orders_month = st.selectbox(
+                "Select Month",
+                options=months_available,
+                format_func=lambda m: pd.Timestamp(m).strftime("%b %Y"),
+                key="orders_month",
+            )
+        elif orders_view == "Yearly":
+            years_available = sorted(df["Year"].dropna().unique(), reverse=True)
+            sel_orders_year = st.selectbox(
+                "Select Year", options=years_available, key="orders_year",
+            )
 
     filtered = df.copy()
     if orders_view == "Weekly":
