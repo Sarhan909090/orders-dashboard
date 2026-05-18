@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "PowerShell(python --version)",
+      "PowerShell(python -m pip --version)",
+      "PowerShell(cd \"C:\\\\Users\\\\Ahmed\\\\Ops\\\\orders-dashboard\"; $env:PATH += \";C:\\\\Users\\\\Ahmed\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\Scripts\"; python extract.py 2>&1)",
+      "Read(//c/Users/Ahmed/AppData/Roaming/Claude/local-agent-mode-sessions/skills-plugin/3cdfa4c9-6514-49d2-b332-f606c6abbba2/ca1c842b-5a23-42f6-8b34-78f90e26d4ac/skills/xlsx/**)",
+      "Bash(python scripts/extract-text.py \"C:\\\\Users\\\\Ahmed\\\\Desktop\\\\Order Deliveries % calc - Copy.xlsx\")",
+      "Bash(find \"C:\\\\Users\\\\Ahmed\\\\AppData\\\\Roaming\\\\Claude\" -name \"extract-text*\" -type f 2>/dev/null)",
+      "Bash(python3)"
+    ]
+  }
+}

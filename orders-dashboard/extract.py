@@ -1,0 +1,142 @@
+import gspread
+from google.oauth2.service_account import Credentials
+import pandas as pd
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+
+def load_orders(sheet_url_or_name: str, worksheet_name: str = "Orders Plan ") -> pd.DataFrame:
+    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet(worksheet_name)
+    rows = ws.get_all_values()
+    if not rows:
+        return pd.DataFrame()
+
+    # Build unique headers — blank/duplicate cols get a positional suffix
+    raw_headers = rows[0]
+    seen = {}
+    headers = []
+    for i, h in enumerate(raw_headers):
+        key = h.strip() if h.strip() else f"_col{i}"
+        if key in seen:
+            seen[key] += 1
+            key = f"{key}_{seen[key]}"
+        else:
+            seen[key] = 0
+        headers.append(key)
+
+    return pd.DataFrame(rows[1:], columns=headers)
+
+
+def load_dot_items(sheet_url_or_name: str) -> pd.DataFrame:
+    """Return all DOT SKU line items from the Data worksheet (one row per SKU)."""
+    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet("Data")
+    rows = ws.get_all_values()
+    if not rows:
+        return pd.DataFrame(columns=["SO", "Item Sku", "Item Name", "Item QTY"])
+
+    data = pd.DataFrame(rows[1:], columns=rows[0])
+    data["Item QTY"] = pd.to_numeric(data["Item QTY"], errors="coerce").fillna(0)
+
+    dot_items = data[data["Item Sku"].str.upper().str.contains("DOT", na=False)].copy()
+    return dot_items[["Order", "Item Sku", "Item Name", "Item QTY"]].rename(columns={"Order": "SO"})
+
+
+def load_unit_counts(sheet_url_or_name: str) -> pd.DataFrame:
+    """Return one row per SO with DOT-SKU count and total DOT units from the Data worksheet.
+    Excludes Transportation and any non-DOT SKUs."""
+    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet("Data")
+    rows = ws.get_all_values()
+    if not rows:
+        return pd.DataFrame(columns=["SO", "SKUs", "Total_Units"])
+
+    data = pd.DataFrame(rows[1:], columns=rows[0])
+    data["Item QTY"] = pd.to_numeric(data["Item QTY"], errors="coerce").fillna(0)
+
+    # Keep only DOT SKUs
+    dot_items = data[data["Item Sku"].str.upper().str.contains("DOT", na=False)]
+
+    return (
+        dot_items.groupby("Order")
+        .agg(SKUs=("Item Sku", "count"), Total_Units=("Item QTY", "sum"))
+        .reset_index()
+        .rename(columns={"Order": "SO"})
+    )
+
+
+def write_dot_tags(sheet_url_or_name: str, so_tag_map: dict, worksheet_name: str = "Orders Plan ") -> list:
+    """Update the Status cell for each SO in so_tag_map. Returns list of SOs updated."""
+    write_scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_file("credentials.json", scopes=write_scopes)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet(worksheet_name)
+    rows = ws.get_all_values()
+    if not rows:
+        return []
+
+    headers = [h.strip() for h in rows[0]]
+    try:
+        so_col     = headers.index("SO")
+        status_col = headers.index("Status")
+    except ValueError as e:
+        raise ValueError(f"Column not found: {e}. Headers: {headers}")
+
+    so_row_map = {
+        row[so_col].strip(): i + 2          # 1-based row index; +1 for header, +1 for gspread
+        for i, row in enumerate(rows[1:])
+        if so_col < len(row) and row[so_col].strip()
+    }
+
+    updates = [
+        {"range": gspread.utils.rowcol_to_a1(so_row_map[so], status_col + 1), "values": [[tag]]}
+        for so, tag in so_tag_map.items()
+        if so in so_row_map
+    ]
+    if updates:
+        ws.batch_update(updates)
+
+    return [so for so in so_tag_map if so in so_row_map]
+
+
+if __name__ == "__main__":
+    SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
+    df = load_orders(SHEET)
+    print(f"Shape: {df.shape}")
+    print(f"Columns: {df.columns.tolist()}")
+    print()
+    print(df[["SO", "Customer Name", "Order Date", "Status", "Total Order Value"]].head(5).to_string())
