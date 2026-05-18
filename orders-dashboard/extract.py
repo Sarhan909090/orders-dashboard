@@ -8,8 +8,18 @@ SCOPES = [
 ]
 
 
+def _get_creds(scopes):
+    """Load credentials from Streamlit secrets (cloud) or credentials.json (local)."""
+    try:
+        import streamlit as st
+        info = dict(st.secrets["gcp_service_account"])
+        return Credentials.from_service_account_info(info, scopes=scopes)
+    except Exception:
+        return Credentials.from_service_account_file("credentials.json", scopes=scopes)
+
+
 def load_orders(sheet_url_or_name: str, worksheet_name: str = "Orders Plan ") -> pd.DataFrame:
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    creds = _get_creds(SCOPES)
     client = gspread.authorize(creds)
 
     if sheet_url_or_name.startswith("http"):
@@ -40,7 +50,7 @@ def load_orders(sheet_url_or_name: str, worksheet_name: str = "Orders Plan ") ->
 
 def load_dot_items(sheet_url_or_name: str) -> pd.DataFrame:
     """Return all DOT SKU line items from the Data worksheet (one row per SKU)."""
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    creds = _get_creds(SCOPES)
     client = gspread.authorize(creds)
 
     if sheet_url_or_name.startswith("http"):
@@ -63,7 +73,7 @@ def load_dot_items(sheet_url_or_name: str) -> pd.DataFrame:
 def load_unit_counts(sheet_url_or_name: str) -> pd.DataFrame:
     """Return one row per SO with DOT-SKU count and total DOT units from the Data worksheet.
     Excludes Transportation and any non-DOT SKUs."""
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    creds = _get_creds(SCOPES)
     client = gspread.authorize(creds)
 
     if sheet_url_or_name.startswith("http"):
@@ -96,7 +106,7 @@ def write_dot_tags(sheet_url_or_name: str, so_tag_map: dict, worksheet_name: str
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = Credentials.from_service_account_file("credentials.json", scopes=write_scopes)
+    creds = _get_creds(write_scopes)
     client = gspread.authorize(creds)
 
     if sheet_url_or_name.startswith("http"):
