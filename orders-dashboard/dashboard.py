@@ -243,12 +243,26 @@ with tab_orders:
     elif orders_view == "Yearly":
         filtered = filtered[filtered["Year"] == sel_orders_year]
 
+    # Delivered = orders whose Delivery Date falls in the selected period
+    # (independent of Order Date — a March order delivered in May counts for May)
+    if orders_view == "Weekly":
+        del_week = df["Delivery Date"].apply(lambda d: week_start(d) if pd.notna(d) else pd.NaT)
+        delivered_count = (del_week == sel_orders_week).sum()
+    elif orders_view == "Monthly":
+        delivered_count = (
+            df["Delivery Date"].dt.to_period("M").dt.to_timestamp() == sel_orders_month
+        ).sum()
+    elif orders_view == "Yearly":
+        delivered_count = (df["Delivery Date"].dt.year == sel_orders_year).sum()
+    else:  # All Time
+        delivered_count = df["Delivery Date"].notna().sum()
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Orders", f"{len(filtered):,}")
     c2.metric("Unique Customers", f"{filtered['Customer Name'].nunique():,}")
     total_val = filtered["Total Order Value"].sum()
     c3.metric("Total Order Value", f"{total_val:,.0f}" if total_val else "N/A")
-    c4.metric("Delivered", f"{filtered['Delivery Date'].notna().sum():,}")
+    c4.metric("Delivered", f"{delivered_count:,}")
 
     st.divider()
     col_left, col_right = st.columns(2)
