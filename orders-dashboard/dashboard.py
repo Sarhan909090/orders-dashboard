@@ -5,7 +5,11 @@ import numpy as np
 from extract import load_orders, load_unit_counts, load_dot_items, write_dot_tags
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
-st.title("Orders Dashboard")
+col_title, col_refresh = st.columns([9, 1])
+col_title.title("Orders Dashboard")
+if col_refresh.button("🔄 Refresh", help="Reload all data from Google Sheet"):
+    st.cache_data.clear()
+    st.rerun()
 
 SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
 
