@@ -10,12 +10,26 @@ SCOPES = [
 
 def _get_creds(scopes):
     """Load credentials from Streamlit secrets (cloud) or credentials.json (local)."""
+    # ── Cloud: read from Streamlit secrets ──────────────────────────────────
     try:
         import streamlit as st
-        info = dict(st.secrets["gcp_service_account"])
-        return Credentials.from_service_account_info(info, scopes=scopes)
+        if "gcp_service_account" in st.secrets:
+            info = dict(st.secrets["gcp_service_account"])
+            # TOML stores \n as a literal backslash-n — convert to real newlines
+            if "private_key" in info:
+                info["private_key"] = info["private_key"].replace("\\n", "\n")
+            return Credentials.from_service_account_info(info, scopes=scopes)
     except Exception:
+        pass
+
+    # ── Local: read from credentials.json ───────────────────────────────────
+    try:
         return Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "No credentials found. Either add [gcp_service_account] to Streamlit Secrets "
+            "or place credentials.json in the project root for local development."
+        )
 
 
 def load_orders(sheet_url_or_name: str, worksheet_name: str = "Orders Plan ") -> pd.DataFrame:
