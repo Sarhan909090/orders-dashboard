@@ -293,7 +293,9 @@ with tab_orders:
     for col in ["Total Order Value", "Order Overdue"]:
         if col in orders_display.columns:
             orders_display[col] = (
-                pd.to_numeric(orders_display[col], errors="coerce")
+                orders_display[col].astype(str)
+                .str.replace(",", "", regex=False).str.strip()
+                .pipe(pd.to_numeric, errors="coerce")
                 .map(lambda x: f"EGP {x:,.0f}" if pd.notna(x) and x != 0 else "")
             )
 
