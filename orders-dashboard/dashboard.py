@@ -279,9 +279,32 @@ with tab_orders:
     st.plotly_chart(fig_cust, width='stretch')
 
     st.subheader("Order Details")
+
+    search_order = st.text_input(
+        "Search orders", placeholder="SO number, customer name, notes…",
+        key="orders_search"
+    ).strip()
+
     display_cols = ["SO", "Customer Name", "Order Date", "Flag", "Total Order Value",
-                    "Delivery Date", "Notes"]
-    st.dataframe(fmt_dates(filtered[[c for c in display_cols if c in filtered.columns]]), width='stretch')
+                    "Order Overdue", "Delivery Date", "Notes"]
+    orders_display = filtered[[c for c in display_cols if c in filtered.columns]].copy()
+
+    # Format currency columns as EGP
+    for col in ["Total Order Value", "Order Overdue"]:
+        if col in orders_display.columns:
+            orders_display[col] = (
+                pd.to_numeric(orders_display[col], errors="coerce")
+                .map(lambda x: f"EGP {x:,.0f}" if pd.notna(x) and x != 0 else "")
+            )
+
+    if search_order:
+        mask = orders_display.apply(
+            lambda col: col.astype(str).str.contains(search_order, case=False, na=False)
+        ).any(axis=1)
+        orders_display = orders_display[mask]
+
+    st.caption(f"{len(orders_display):,} order(s)")
+    st.dataframe(fmt_dates(orders_display), width='stretch')
 
 
 # ════════════════════════════════════════════════════════════════════════════
