@@ -212,9 +212,9 @@ with tab_orders:
 
         if orders_view == "Weekly":
             weeks_available = sorted(df["Week"].dropna().unique(), reverse=True)
-            sel_orders_week = st.selectbox(
-                "Select Week",
-                options=weeks_available,
+            sel_orders_week = st.multiselect(
+                "Select Week(s)", options=weeks_available,
+                default=[weeks_available[0]] if weeks_available else [],
                 format_func=lambda w: (
                     f"{pd.Timestamp(w).strftime('%d %b %Y')} – "
                     f"{(pd.Timestamp(w) + pd.Timedelta(days=5)).strftime('%d %b %Y')}"
@@ -223,37 +223,46 @@ with tab_orders:
             )
         elif orders_view == "Monthly":
             months_available = sorted(df["Month"].dropna().unique(), reverse=True)
-            sel_orders_month = st.selectbox(
-                "Select Month",
-                options=months_available,
+            sel_orders_month = st.multiselect(
+                "Select Month(s)", options=months_available,
+                default=[months_available[0]] if months_available else [],
                 format_func=lambda m: pd.Timestamp(m).strftime("%b %Y"),
                 key="orders_month",
             )
         elif orders_view == "Yearly":
             years_available = sorted(df["Year"].dropna().unique(), reverse=True)
-            sel_orders_year = st.selectbox(
-                "Select Year", options=years_available, key="orders_year",
+            sel_orders_year = st.multiselect(
+                "Select Year(s)", options=years_available,
+                default=[years_available[0]] if years_available else [],
+                key="orders_year",
             )
 
     filtered = df.copy()
     if orders_view == "Weekly":
-        filtered = filtered[filtered["Week"] == sel_orders_week]
+        filtered = filtered[filtered["Week"].isin(sel_orders_week)] if sel_orders_week else df.iloc[:0]
     elif orders_view == "Monthly":
-        filtered = filtered[filtered["Month"] == sel_orders_month]
+        filtered = filtered[filtered["Month"].isin(sel_orders_month)] if sel_orders_month else df.iloc[:0]
     elif orders_view == "Yearly":
-        filtered = filtered[filtered["Year"] == sel_orders_year]
+        filtered = filtered[filtered["Year"].isin(sel_orders_year)] if sel_orders_year else df.iloc[:0]
+
+    if orders_view != "All Time" and not any([
+        locals().get("sel_orders_week"), locals().get("sel_orders_month"), locals().get("sel_orders_year")
+    ]):
+        st.info("Select at least one period to see data.")
 
     # Delivered = orders whose Delivery Date falls in the selected period
-    # (independent of Order Date — a March order delivered in May counts for May)
     if orders_view == "Weekly":
         del_week = df["Delivery Date"].apply(lambda d: week_start(d) if pd.notna(d) else pd.NaT)
-        delivered_count = (del_week == sel_orders_week).sum()
+        delivered_count = del_week.isin(sel_orders_week).sum() if sel_orders_week else 0
     elif orders_view == "Monthly":
         delivered_count = (
-            df["Delivery Date"].dt.to_period("M").dt.to_timestamp() == sel_orders_month
-        ).sum()
+            df["Delivery Date"].dt.to_period("M").dt.to_timestamp().isin(sel_orders_month).sum()
+            if sel_orders_month else 0
+        )
     elif orders_view == "Yearly":
-        delivered_count = (df["Delivery Date"].dt.year == sel_orders_year).sum()
+        delivered_count = (
+            df["Delivery Date"].dt.year.isin(sel_orders_year).sum() if sel_orders_year else 0
+        )
     else:  # All Time
         delivered_count = df["Delivery Date"].notna().sum()
 
@@ -331,17 +340,20 @@ with tab_kpi:
 
     # Month selector based on target delivery month
     kpi_months = sorted(df.dropna(subset=["Target Month"])["Target Month"].dropna().unique())
-    sel_kpi_month = st.selectbox(
-        "Delivery Month",
-        options=["All"] + kpi_months,
-        format_func=lambda m: "All" if m == "All" else pd.Timestamp(m).strftime("%b %Y"),
+    sel_kpi_month = st.multiselect(
+        "Delivery Month(s)",
+        options=kpi_months,
+        default=[],
+        format_func=lambda m: pd.Timestamp(m).strftime("%b %Y"),
         key="kpi_month",
     )
+    if not sel_kpi_month:
+        st.caption("Showing all months")
 
     # In-scope = has a Delivery Status (Plan column filled + Order Date present)
     kpi_df = df[df["Delivery Status"].notna()].copy()
-    if sel_kpi_month != "All":
-        kpi_df = kpi_df[kpi_df["Target Month"] == sel_kpi_month]
+    if sel_kpi_month:
+        kpi_df = kpi_df[kpi_df["Target Month"].isin(sel_kpi_month)]
 
     excluded_canceled = (kpi_df["Delivery Status"] == "Excluded - Canceled").sum()
     excluded_delayed = (kpi_df["Delivery Status"] == "Excluded - Delayed by Customer").sum()
@@ -445,29 +457,33 @@ with tab_dot:
 
     if view == "Weekly":
         weeks = sorted(dot_all["Order Week"].dropna().unique(), reverse=True)
-        sel_week = st.selectbox(
-            "Select Week (Order Date)",
-            options=weeks,
+        sel_week = st.multiselect(
+            "Select Week(s) (Order Date)", options=weeks,
+            default=[weeks[0]] if weeks else [],
             format_func=lambda w: f"{pd.Timestamp(w).strftime('%d %b %Y')} – "
                                   f"{(pd.Timestamp(w) + pd.Timedelta(days=5)).strftime('%d %b %Y')}",
             key="dot_week",
         )
-        dot_df = dot_all[dot_all["Order Week"] == sel_week]
+        dot_df = dot_all[dot_all["Order Week"].isin(sel_week)] if sel_week else dot_all.iloc[:0]
 
     elif view == "Monthly":
         months = sorted(dot_all["Order Month"].dropna().unique(), reverse=True)
-        sel_month = st.selectbox(
-            "Select Month (Order Date)",
-            options=months,
+        sel_month = st.multiselect(
+            "Select Month(s) (Order Date)", options=months,
+            default=[months[0]] if months else [],
             format_func=lambda m: pd.Timestamp(m).strftime("%b %Y"),
             key="dot_month",
         )
-        dot_df = dot_all[dot_all["Order Month"] == sel_month]
+        dot_df = dot_all[dot_all["Order Month"].isin(sel_month)] if sel_month else dot_all.iloc[:0]
 
     elif view == "Yearly":
         years = sorted(dot_all["Order Year"].dropna().unique(), reverse=True)
-        sel_year = st.selectbox("Select Year", options=years, key="dot_year")
-        dot_df = dot_all[dot_all["Order Year"] == sel_year]
+        sel_year = st.multiselect(
+            "Select Year(s)", options=years,
+            default=[years[0]] if years else [],
+            key="dot_year",
+        )
+        dot_df = dot_all[dot_all["Order Year"].isin(sel_year)] if sel_year else dot_all.iloc[:0]
 
     else:  # All Time
         dot_df = dot_all
