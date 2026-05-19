@@ -330,11 +330,6 @@ with tab_orders:
 
     st.subheader("Order Details")
 
-    search_order = st.text_input(
-        "Search orders", placeholder="SO number, customer name, notes…",
-        key="orders_search"
-    ).strip()
-
     display_cols = ["SO", "Customer Name", "Order Date", "Flag", "Total Order Value",
                     "Order Overdue", "Delivery Date", "Notes"]
     orders_display = filtered[[c for c in display_cols if c in filtered.columns]].copy()
@@ -349,10 +344,49 @@ with tab_orders:
                 .map(lambda x: f"EGP {x:,.0f}" if pd.notna(x) and x != 0 else "")
             )
 
-    if search_order:
-        mask = orders_display.apply(
-            lambda col: col.astype(str).str.contains(search_order, case=False, na=False)
-        ).any(axis=1)
+    with st.expander("🔽 Column Filters", expanded=False):
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        f_ord_so    = fc1.text_input("SO", key="ord_f_so").strip()
+        f_ord_cust  = fc2.text_input("Customer Name", key="ord_f_cust").strip()
+        f_ord_notes = fc3.text_input("Notes", key="ord_f_notes").strip()
+        flag_opts   = sorted(filtered["Flag"].fillna("").unique().tolist())
+        f_ord_flag  = fc4.multiselect("Flag", flag_opts, key="ord_f_flag")
+
+        fc5, fc6, _, _ = st.columns(4)
+        od_vals = filtered["Order Date"].dropna()
+        if not od_vals.empty:
+            f_ord_od = fc5.date_input(
+                "Order Date", value=(od_vals.min().date(), od_vals.max().date()), key="ord_f_od"
+            )
+        else:
+            f_ord_od = ()
+        dd_vals = filtered["Delivery Date"].dropna()
+        if not dd_vals.empty:
+            f_ord_dd = fc6.date_input(
+                "Delivery Date", value=(dd_vals.min().date(), dd_vals.max().date()), key="ord_f_dd"
+            )
+        else:
+            f_ord_dd = ()
+
+    if f_ord_so:
+        orders_display = orders_display[orders_display["SO"].str.contains(f_ord_so, case=False, na=False)]
+    if f_ord_cust:
+        orders_display = orders_display[orders_display["Customer Name"].str.contains(f_ord_cust, case=False, na=False)]
+    if f_ord_notes and "Notes" in orders_display.columns:
+        orders_display = orders_display[orders_display["Notes"].str.contains(f_ord_notes, case=False, na=False)]
+    if f_ord_flag:
+        orders_display = orders_display[orders_display["Flag"].fillna("").isin(f_ord_flag)]
+    if len(f_ord_od) == 2:
+        mask = orders_display["Order Date"].isna() | (
+            (orders_display["Order Date"].dt.date >= f_ord_od[0]) &
+            (orders_display["Order Date"].dt.date <= f_ord_od[1])
+        )
+        orders_display = orders_display[mask]
+    if len(f_ord_dd) == 2:
+        mask = orders_display["Delivery Date"].isna() | (
+            (orders_display["Delivery Date"].dt.date >= f_ord_dd[0]) &
+            (orders_display["Delivery Date"].dt.date <= f_ord_dd[1])
+        )
         orders_display = orders_display[mask]
 
     st.caption(f"{len(orders_display):,} order(s)")
@@ -457,10 +491,60 @@ with tab_kpi:
     detail_cols = ["SO", "Customer Name", "Plan", "Channel", "Order Date",
                    "Target Week Start", "Target Week End", "Delivery Date",
                    "Delivery Status", "Days Late"]
-    st.dataframe(
-        fmt_dates(kpi_df[[c for c in detail_cols if c in kpi_df.columns]].sort_values("Delivery Status")),
-        use_container_width=True,
-    )
+    kpi_detail = kpi_df[[c for c in detail_cols if c in kpi_df.columns]].sort_values("Delivery Status").copy()
+
+    with st.expander("🔽 Column Filters", expanded=False):
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        f_kpi_so     = fc1.text_input("SO", key="kpi_f_so").strip()
+        f_kpi_cust   = fc2.text_input("Customer Name", key="kpi_f_cust").strip()
+        plan_opts    = sorted(kpi_detail["Plan"].dropna().unique().tolist())
+        f_kpi_plan   = fc3.multiselect("Plan", plan_opts, key="kpi_f_plan")
+        chan_opts     = sorted(kpi_detail["Channel"].dropna().unique().tolist())
+        f_kpi_chan   = fc4.multiselect("Channel", chan_opts, key="kpi_f_chan")
+
+        fc5, fc6, fc7, _ = st.columns(4)
+        status_opts  = sorted(kpi_detail["Delivery Status"].dropna().unique().tolist())
+        f_kpi_status = fc5.multiselect("Delivery Status", status_opts, key="kpi_f_status")
+        od_vals      = kpi_detail["Order Date"].dropna()
+        if not od_vals.empty:
+            f_kpi_od = fc6.date_input(
+                "Order Date", value=(od_vals.min().date(), od_vals.max().date()), key="kpi_f_od"
+            )
+        else:
+            f_kpi_od = ()
+        dd_vals = kpi_detail["Delivery Date"].dropna()
+        if not dd_vals.empty:
+            f_kpi_dd = fc7.date_input(
+                "Delivery Date", value=(dd_vals.min().date(), dd_vals.max().date()), key="kpi_f_dd"
+            )
+        else:
+            f_kpi_dd = ()
+
+    if f_kpi_so:
+        kpi_detail = kpi_detail[kpi_detail["SO"].str.contains(f_kpi_so, case=False, na=False)]
+    if f_kpi_cust:
+        kpi_detail = kpi_detail[kpi_detail["Customer Name"].str.contains(f_kpi_cust, case=False, na=False)]
+    if f_kpi_plan:
+        kpi_detail = kpi_detail[kpi_detail["Plan"].isin(f_kpi_plan)]
+    if f_kpi_chan:
+        kpi_detail = kpi_detail[kpi_detail["Channel"].isin(f_kpi_chan)]
+    if f_kpi_status:
+        kpi_detail = kpi_detail[kpi_detail["Delivery Status"].isin(f_kpi_status)]
+    if len(f_kpi_od) == 2:
+        mask = kpi_detail["Order Date"].isna() | (
+            (kpi_detail["Order Date"].dt.date >= f_kpi_od[0]) &
+            (kpi_detail["Order Date"].dt.date <= f_kpi_od[1])
+        )
+        kpi_detail = kpi_detail[mask]
+    if len(f_kpi_dd) == 2:
+        mask = kpi_detail["Delivery Date"].isna() | (
+            (kpi_detail["Delivery Date"].dt.date >= f_kpi_dd[0]) &
+            (kpi_detail["Delivery Date"].dt.date <= f_kpi_dd[1])
+        )
+        kpi_detail = kpi_detail[mask]
+
+    st.caption(f"{len(kpi_detail):,} order(s)")
+    st.dataframe(fmt_dates(kpi_detail), use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -631,13 +715,53 @@ with tab_dot:
     # ── Order Detail ───────────────────────────────────────────────────────
     st.subheader("Order Detail")
 
-    # Search box
-    search_so = st.text_input("Search SO number", placeholder="e.g. S0008814", key="dot_search").strip()
-    detail_df = dot_df.copy()
-    if search_so:
-        detail_df = detail_df[detail_df["SO"].str.contains(search_so, case=False, na=False)]
+    detail_df = dot_df.copy().sort_values(["Status", "DOT Status"])
 
-    detail_df = detail_df.sort_values(["Status", "DOT Status"])
+    with st.expander("🔽 Column Filters", expanded=False):
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        f_dot_so     = fc1.text_input("SO", key="dot_f_so").strip()
+        f_dot_cust   = fc2.text_input("Customer Name", key="dot_f_cust").strip()
+        type_opts    = sorted(detail_df["Status"].dropna().unique().tolist())
+        f_dot_type   = fc3.multiselect("DOT Type", type_opts, key="dot_f_type")
+        status_opts  = sorted(detail_df["DOT Status"].dropna().unique().tolist())
+        f_dot_status = fc4.multiselect("Delivery Status", status_opts, key="dot_f_status")
+
+        fc5, fc6, _, _ = st.columns(4)
+        od_vals = detail_df["Order Date"].dropna()
+        if not od_vals.empty:
+            f_dot_od = fc5.date_input(
+                "Order Date", value=(od_vals.min().date(), od_vals.max().date()), key="dot_f_od"
+            )
+        else:
+            f_dot_od = ()
+        dd_vals = detail_df["Delivery Date"].dropna()
+        if not dd_vals.empty:
+            f_dot_dd = fc6.date_input(
+                "Delivery Date", value=(dd_vals.min().date(), dd_vals.max().date()), key="dot_f_dd"
+            )
+        else:
+            f_dot_dd = ()
+
+    if f_dot_so:
+        detail_df = detail_df[detail_df["SO"].str.contains(f_dot_so, case=False, na=False)]
+    if f_dot_cust:
+        detail_df = detail_df[detail_df["Customer Name"].str.contains(f_dot_cust, case=False, na=False)]
+    if f_dot_type:
+        detail_df = detail_df[detail_df["Status"].isin(f_dot_type)]
+    if f_dot_status:
+        detail_df = detail_df[detail_df["DOT Status"].isin(f_dot_status)]
+    if len(f_dot_od) == 2:
+        mask = detail_df["Order Date"].isna() | (
+            (detail_df["Order Date"].dt.date >= f_dot_od[0]) &
+            (detail_df["Order Date"].dt.date <= f_dot_od[1])
+        )
+        detail_df = detail_df[mask]
+    if len(f_dot_dd) == 2:
+        mask = detail_df["Delivery Date"].isna() | (
+            (detail_df["Delivery Date"].dt.date >= f_dot_dd[0]) &
+            (detail_df["Delivery Date"].dt.date <= f_dot_dd[1])
+        )
+        detail_df = detail_df[mask]
 
     # ── Table view ─────────────────────────────────────────────────────────
     table_cols = ["SO", "Customer Name", "Status", "Order Date",
@@ -651,6 +775,7 @@ with tab_dot:
         "DOT Days Late": "Days Late",
         "Total_Units": "Chairs",
     })
+    st.caption(f"{len(table_display):,} order(s)")
     st.dataframe(fmt_dates(table_display), use_container_width=True)
 
     # ── Expandable rows ─────────────────────────────────────────────────────
