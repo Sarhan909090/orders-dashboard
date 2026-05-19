@@ -416,7 +416,7 @@ with tab_kpi:
         color_map = {
             "On time": "#2ecc71", "Early": "#27ae60",
             "Late": "#e74c3c", "Not Delivered": "#95a5a6",
-            "Cancelled": "#bdc3c7",
+            "Cancelled": "#e67e22",
         }
         fig_pie = px.pie(status_dist, names="Status", values="Count",
                          color="Status", color_discrete_map=color_map,
