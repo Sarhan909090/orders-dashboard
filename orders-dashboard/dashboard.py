@@ -547,7 +547,7 @@ with tab_dot:
     color_map = {
         "On time": "#2ecc71", "Early": "#27ae60",
         "Late": "#e74c3c", "Not Delivered": "#95a5a6",
-        "Cancelled": "#bdc3c7",
+        "Cancelled": "#e67e22",
     }
 
     # ── Status breakdown by DOT type ───────────────────────────────────────
