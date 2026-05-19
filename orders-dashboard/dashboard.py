@@ -31,7 +31,7 @@ def target_week(order_date, plan):
 
 def dot_target_week(order_date, status):
     """DOT-GO / DOT-LITE → 2 weeks; DOT-V2.1 → 8 weeks."""
-    weeks = 8 if status.upper() == "DOT-V2.1" else 2
+    weeks = 8 if status.strip().upper() == "DOT-V2.1" else 2
     expected = order_date + pd.Timedelta(weeks=weeks)
     t_start = week_start(expected)
     t_end = t_start + pd.Timedelta(days=5)
@@ -42,6 +42,9 @@ def classify_dot(row):
     od = row["Order Date"]
     if pd.isna(od):
         return None, pd.NaT, pd.NaT
+    # Cancelled tag may appear in Status or CS Updated Date
+    if _is_canceled(row["Status"], row.get("CS Updated Date", "")):
+        return "Cancelled", pd.NaT, pd.NaT
     t_start, t_end = dot_target_week(od, str(row["Status"]))
     actual = row["Delivery Date"]
     if pd.isna(actual):
@@ -55,14 +58,27 @@ def classify_dot(row):
     return result, t_start, t_end
 
 
+def _is_canceled(status_val, cs_updated_date_val):
+    """True if either the Status or CS Updated Date column signals a cancellation."""
+    return (
+        str(status_val).strip().lower()          in ("canceled", "cancelled") or
+        str(cs_updated_date_val).strip().lower() in ("canceled", "cancelled")
+    )
+
+
 def classify_delivery(row):
     status = str(row["Status"]).strip()
-    if status == "Canceled":
-        return "Excluded - Canceled"
+    plan   = str(row["Plan"]).strip()
+
+    # Exclude DOT orders from the regular KPI entirely
+    if status.upper().startswith("DOT"):
+        return None
+    # Cancelled tag may appear in Status or CS Updated Date
+    if _is_canceled(status, row.get("CS Updated Date", "")):
+        return "Cancelled"
     if status in ("Delayed by Customer", "Delayed"):
         return "Excluded - Delayed by Customer"
 
-    plan = str(row["Plan"]).strip()
     if not plan or plan == "nan":
         return None                         # no Plan value → out of KPI scope
 
@@ -93,16 +109,17 @@ def get_data() -> pd.DataFrame:
     df["Week"]  = df["Order Date"].apply(lambda d: week_start(d) if pd.notna(d) else pd.NaT)
     df["Year"]  = df["Order Date"].dt.year
 
-    def _flag(s):
-        s = str(s).strip()
-        if s == "Canceled":
+    def _flag(row):
+        s = str(row["Status"]).strip()
+        c = str(row.get("CS Updated Date", "")).strip()
+        if _is_canceled(s, c):
             return "Cancelled"
         if s in ("Delayed", "Delayed by Customer"):
             return "Delayed"
         if s.upper().startswith("DOT"):
             return s          # e.g. DOT-GO, DOT-LITE, DOT-V2.1
         return ""
-    df["Flag"] = df["Status"].apply(_flag)
+    df["Flag"] = df.apply(_flag, axis=1)
 
     df["Total Order Value"] = (
         df["Total Order Value"].astype(str)
@@ -160,9 +177,14 @@ def get_data() -> pd.DataFrame:
 
     # DOT orders classification
     dot_mask = df["Status"].str.upper().str.startswith("DOT", na=False)
-    dot_results = df[dot_mask].apply(classify_dot, axis=1, result_type="expand")
-    dot_results.columns = ["DOT Status", "DOT Target Start", "DOT Target End"]
-    df = df.join(dot_results)
+    if dot_mask.any():
+        dot_results = df[dot_mask].apply(classify_dot, axis=1, result_type="expand")
+        dot_results.columns = ["DOT Status", "DOT Target Start", "DOT Target End"]
+        df = df.join(dot_results)
+    else:
+        df["DOT Status"]      = pd.NA
+        df["DOT Target Start"] = pd.NaT
+        df["DOT Target End"]   = pd.NaT
 
     # DOT days late (skip Fridays)
     def dot_days_late(row):
@@ -214,6 +236,9 @@ with tab_orders:
             horizontal=True, key="orders_view",
         )
 
+        # Initialise all three so they're always defined regardless of which branch runs
+        sel_orders_week = sel_orders_month = sel_orders_year = []
+
         if orders_view == "Weekly":
             weeks_available = sorted(df["Week"].dropna().unique(), reverse=True)
             sel_orders_week = st.multiselect(
@@ -249,9 +274,7 @@ with tab_orders:
     elif orders_view == "Yearly":
         filtered = filtered[filtered["Year"].isin(sel_orders_year)] if sel_orders_year else df.iloc[:0]
 
-    if orders_view != "All Time" and not any([
-        locals().get("sel_orders_week"), locals().get("sel_orders_month"), locals().get("sel_orders_year")
-    ]):
+    if orders_view != "All Time" and not any([sel_orders_week, sel_orders_month, sel_orders_year]):
         st.info("Select at least one period to see data.")
 
     # Delivered = orders whose Delivery Date falls in the selected period
@@ -287,13 +310,13 @@ with tab_orders:
         monthly["Month Label"] = monthly["Month"].dt.strftime("%b %Y")
         fig_trend = px.bar(monthly, x="Month Label", y="Orders", title="Orders per Month",
                            labels={"Month Label": "Month"})
-        st.plotly_chart(fig_trend, width='stretch')
+        st.plotly_chart(fig_trend, use_container_width=True)
 
     with col_right:
         status_counts = filtered["Status"].replace("", "No Status").value_counts().reset_index()
         status_counts.columns = ["Status", "Count"]
         fig_status = px.pie(status_counts, names="Status", values="Count", title="Orders by Status")
-        st.plotly_chart(fig_status, width='stretch')
+        st.plotly_chart(fig_status, use_container_width=True)
 
     top_customers = (
         filtered.groupby("Customer Name").size()
@@ -303,7 +326,7 @@ with tab_orders:
     fig_cust = px.bar(top_customers, x="Orders", y="Customer Name", orientation="h",
                       title="Top 10 Customers")
     fig_cust.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig_cust, width='stretch')
+    st.plotly_chart(fig_cust, use_container_width=True)
 
     st.subheader("Order Details")
 
@@ -333,7 +356,7 @@ with tab_orders:
         orders_display = orders_display[mask]
 
     st.caption(f"{len(orders_display):,} order(s)")
-    st.dataframe(fmt_dates(orders_display), width='stretch')
+    st.dataframe(fmt_dates(orders_display), use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -359,9 +382,10 @@ with tab_kpi:
     if sel_kpi_month:
         kpi_df = kpi_df[kpi_df["Target Month"].isin(sel_kpi_month)]
 
-    excluded_canceled = (kpi_df["Delivery Status"] == "Excluded - Canceled").sum()
+    cancelled_count  = (kpi_df["Delivery Status"] == "Cancelled").sum()
     excluded_delayed = (kpi_df["Delivery Status"] == "Excluded - Delayed by Customer").sum()
-    eligible = kpi_df[~kpi_df["Delivery Status"].str.startswith("Excluded")]
+    # Eligible = has a plan + order date, not cancelled and not delayed
+    eligible = kpi_df[~kpi_df["Delivery Status"].isin(["Cancelled", "Excluded - Delayed by Customer"])]
     on_time = (eligible["Delivery Status"].isin(["On time", "Early"])).sum()
     late = (eligible["Delivery Status"] == "Late").sum()
     not_delivered = (eligible["Delivery Status"] == "Not Delivered").sum()
@@ -378,23 +402,26 @@ with tab_kpi:
     k5, k6, k7, k8 = st.columns(4)
     k5.metric("On-Time %", f"{on_time_pct:.1%}")
     k6.metric("Avg Days Late", f"{avg_days_late:.1f}" if not pd.isna(avg_days_late) else "—")
-    k7.metric("Excluded - Canceled", f"{excluded_canceled:,}")
+    k7.metric("Cancelled", f"{cancelled_count:,}")
     k8.metric("Excluded - Delayed by Customer", f"{excluded_delayed:,}")
 
     st.divider()
     col_a, col_b = st.columns(2)
 
     with col_a:
-        status_dist = eligible["Delivery Status"].value_counts().reset_index()
+        # Include Cancelled as its own visible slice; exclude Delayed (user-caused, not ops KPI)
+        pie_df = kpi_df[kpi_df["Delivery Status"] != "Excluded - Delayed by Customer"]
+        status_dist = pie_df["Delivery Status"].value_counts().reset_index()
         status_dist.columns = ["Status", "Count"]
         color_map = {
             "On time": "#2ecc71", "Early": "#27ae60",
             "Late": "#e74c3c", "Not Delivered": "#95a5a6",
+            "Cancelled": "#bdc3c7",
         }
         fig_pie = px.pie(status_dist, names="Status", values="Count",
                          color="Status", color_discrete_map=color_map,
                          title="Delivery Status Breakdown")
-        st.plotly_chart(fig_pie, width='stretch')
+        st.plotly_chart(fig_pie, use_container_width=True)
 
     with col_b:
         channel_kpi = (
@@ -410,7 +437,7 @@ with tab_kpi:
                           title="On-Time % by Channel", color="Channel")
         fig_chan.update_traces(textposition="outside")
         fig_chan.update_yaxes(tickformat=".0%", range=[0, 1.1])
-        st.plotly_chart(fig_chan, width='stretch')
+        st.plotly_chart(fig_chan, use_container_width=True)
 
     st.subheader("Channel KPI Breakdown")
     channel_detail = (
@@ -424,7 +451,7 @@ with tab_kpi:
     channel_detail["On-Time %"] = (
         (channel_detail["On time"] + channel_detail["Early"]) / channel_detail["Total"]
     ).map("{:.1%}".format)
-    st.dataframe(fmt_dates(channel_detail), width='stretch')
+    st.dataframe(fmt_dates(channel_detail), use_container_width=True)
 
     st.subheader("Order-Level Detail")
     detail_cols = ["SO", "Customer Name", "Plan", "Channel", "Order Date",
@@ -432,7 +459,7 @@ with tab_kpi:
                    "Delivery Status", "Days Late"]
     st.dataframe(
         fmt_dates(kpi_df[[c for c in detail_cols if c in kpi_df.columns]].sort_values("Delivery Status")),
-        width='stretch',
+        use_container_width=True,
     )
 
 
@@ -442,11 +469,8 @@ with tab_kpi:
 with tab_dot:
     st.subheader("DOT Orders")
 
-    # Base: DOT orders only, cancelled excluded
-    dot_all = df[
-        df["DOT Status"].notna() &
-        (df["Status"].str.upper() != "CANCELED")
-    ].copy()
+    # Base: all DOT orders (Cancelled shown with their own status label)
+    dot_all = df[df["DOT Status"].notna()].copy()
     dot_all["Order Week"] = dot_all["Order Date"].apply(
         lambda d: week_start(d) if pd.notna(d) else pd.NaT
     )
@@ -499,6 +523,7 @@ with tab_dot:
     early_n       = (dot_df["DOT Status"] == "Early").sum()
     late_n        = (dot_df["DOT Status"] == "Late").sum()
     not_del_n     = (dot_df["DOT Status"] == "Not Delivered").sum()
+    cancelled_n   = (dot_df["DOT Status"] == "Cancelled").sum()
     delivered_n   = on_time_n + early_n + late_n
     on_time_pct   = on_time_n / delivered_n if delivered_n > 0 else 0
     avg_days_late = dot_df.loc[dot_df["DOT Status"] == "Late", "DOT Days Late"].mean()
@@ -509,11 +534,12 @@ with tab_dot:
     k3.metric("On-Time %", f"{on_time_pct:.1%}")
     k4.metric("Avg Days Late", f"{avg_days_late:.1f}" if not pd.isna(avg_days_late) else "—")
 
-    k5, k6, k7, k8 = st.columns(4)
+    k5, k6, k7, k8, k9 = st.columns(5)
     k5.metric("On Time", f"{on_time_n:,}")
     k6.metric("Early", f"{early_n:,}")
     k7.metric("Late", f"{late_n:,}")
     k8.metric("Not Delivered", f"{not_del_n:,}")
+    k9.metric("Cancelled", f"{cancelled_n:,}")
 
     st.divider()
     col_a, col_b = st.columns(2)
@@ -521,6 +547,7 @@ with tab_dot:
     color_map = {
         "On time": "#2ecc71", "Early": "#27ae60",
         "Late": "#e74c3c", "Not Delivered": "#95a5a6",
+        "Cancelled": "#bdc3c7",
     }
 
     # ── Status breakdown by DOT type ───────────────────────────────────────
@@ -534,11 +561,11 @@ with tab_dot:
             color="DOT Status", color_discrete_map=color_map,
             barmode="stack", title="Orders by DOT Type & Status",
         )
-        st.plotly_chart(fig_type, width='stretch')
+        st.plotly_chart(fig_type, use_container_width=True)
 
     # ── On-time % by DOT type ──────────────────────────────────────────────
     with col_b:
-        delivered_only = dot_df[dot_df["DOT Status"] != "Not Delivered"]
+        delivered_only = dot_df[dot_df["DOT Status"].isin(["On time", "Early", "Late"])]
         if len(delivered_only) > 0:
             type_kpi = delivered_only.groupby("Status").agg(
                 Orders=("SO", "count"),
@@ -547,7 +574,7 @@ with tab_dot:
             on_time_by_type = (
                 delivered_only[delivered_only["DOT Status"] == "On time"]
                 .groupby("Status").size()
-                .reindex(type_kpi["Status"], fill_value=0).values
+                .reindex(type_kpi["Status"].tolist(), fill_value=0).values
             )
             type_kpi["On-Time %"] = on_time_by_type / type_kpi["Orders"]
             fig_pct = px.bar(
@@ -557,7 +584,7 @@ with tab_dot:
             )
             fig_pct.update_traces(textposition="outside")
             fig_pct.update_yaxes(tickformat=".0%", range=[0, 1.15])
-            st.plotly_chart(fig_pct, width='stretch')
+            st.plotly_chart(fig_pct, use_container_width=True)
         else:
             st.info("No delivered orders in this period.")
 
@@ -578,7 +605,7 @@ with tab_dot:
             color="DOT Status", color_discrete_map=color_map,
             barmode="stack", title="DOT Orders Over Time",
         )
-        st.plotly_chart(fig_trend, width='stretch')
+        st.plotly_chart(fig_trend, use_container_width=True)
 
     # ── DOT type summary table ──────────────────────────────────────────────
     st.subheader("DOT Type Summary")
@@ -587,17 +614,19 @@ with tab_dot:
         Units=("Total_Units", "sum"),
     ).reset_index()
     for col, val in [("On Time", "On time"), ("Early", "Early"),
-                     ("Late", "Late"), ("Not Delivered", "Not Delivered")]:
+                     ("Late", "Late"), ("Not Delivered", "Not Delivered"),
+                     ("Cancelled", "Cancelled")]:
         summary[col] = (
             dot_df[dot_df["DOT Status"] == val]
             .groupby("Status").size()
-            .reindex(summary["Status"], fill_value=0).values
+            .reindex(summary["Status"].tolist(), fill_value=0).values
         )
-    deliverable = summary["Orders"] - summary["Not Delivered"]
-    summary["On-Time %"] = (summary["On Time"] / deliverable.replace(0, pd.NA)).map(
+    # On-time % denominator = delivered orders only (excludes Not Delivered and Cancelled)
+    deliverable = (summary["On Time"] + summary["Early"] + summary["Late"]).astype(float).replace(0.0, np.nan)
+    summary["On-Time %"] = (summary["On Time"] / deliverable).map(
         lambda x: f"{x:.1%}" if pd.notna(x) else "—"
     )
-    st.dataframe(fmt_dates(summary), width='stretch')
+    st.dataframe(fmt_dates(summary), use_container_width=True)
 
     # ── Order Detail ───────────────────────────────────────────────────────
     st.subheader("Order Detail")
@@ -622,12 +651,13 @@ with tab_dot:
         "DOT Days Late": "Days Late",
         "Total_Units": "Chairs",
     })
-    st.dataframe(fmt_dates(table_display), width='stretch')
+    st.dataframe(fmt_dates(table_display), use_container_width=True)
 
     # ── Expandable rows ─────────────────────────────────────────────────────
     st.markdown("**Expand order to view items:**")
     status_icon = {
-        "On time": "✅", "Early": "🟢", "Late": "🔴", "Not Delivered": "⚪",
+        "On time": "✅", "Early": "🟢", "Late": "🔴",
+        "Not Delivered": "⚪", "Cancelled": "🚫",
     }
 
     for row in detail_df.to_dict("records"):
@@ -658,7 +688,7 @@ with tab_dot:
             if items.empty:
                 st.write("No DOT items found in Data sheet.")
             else:
-                st.dataframe(items, width='stretch')
+                st.dataframe(items, use_container_width=True)
 
     # ════════════════════════════════════════════════════════════════════════
     # Untagged DOT orders
