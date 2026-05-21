@@ -378,14 +378,14 @@ with tab_orders:
         orders_display = orders_display[orders_display["Flag"].fillna("").isin(f_ord_flag)]
     if len(f_ord_od) == 2:
         mask = orders_display["Order Date"].isna() | (
-            (orders_display["Order Date"].dt.date >= f_ord_od[0]) &
-            (orders_display["Order Date"].dt.date <= f_ord_od[1])
+            (orders_display["Order Date"] >= pd.Timestamp(f_ord_od[0])) &
+            (orders_display["Order Date"] <= pd.Timestamp(f_ord_od[1]))
         )
         orders_display = orders_display[mask]
     if len(f_ord_dd) == 2:
         mask = orders_display["Delivery Date"].isna() | (
-            (orders_display["Delivery Date"].dt.date >= f_ord_dd[0]) &
-            (orders_display["Delivery Date"].dt.date <= f_ord_dd[1])
+            (orders_display["Delivery Date"] >= pd.Timestamp(f_ord_dd[0])) &
+            (orders_display["Delivery Date"] <= pd.Timestamp(f_ord_dd[1]))
         )
         orders_display = orders_display[mask]
 
@@ -532,14 +532,14 @@ with tab_kpi:
         kpi_detail = kpi_detail[kpi_detail["Delivery Status"].isin(f_kpi_status)]
     if len(f_kpi_od) == 2:
         mask = kpi_detail["Order Date"].isna() | (
-            (kpi_detail["Order Date"].dt.date >= f_kpi_od[0]) &
-            (kpi_detail["Order Date"].dt.date <= f_kpi_od[1])
+            (kpi_detail["Order Date"] >= pd.Timestamp(f_kpi_od[0])) &
+            (kpi_detail["Order Date"] <= pd.Timestamp(f_kpi_od[1]))
         )
         kpi_detail = kpi_detail[mask]
     if len(f_kpi_dd) == 2:
         mask = kpi_detail["Delivery Date"].isna() | (
-            (kpi_detail["Delivery Date"].dt.date >= f_kpi_dd[0]) &
-            (kpi_detail["Delivery Date"].dt.date <= f_kpi_dd[1])
+            (kpi_detail["Delivery Date"] >= pd.Timestamp(f_kpi_dd[0])) &
+            (kpi_detail["Delivery Date"] <= pd.Timestamp(f_kpi_dd[1]))
         )
         kpi_detail = kpi_detail[mask]
 
@@ -752,14 +752,14 @@ with tab_dot:
         detail_df = detail_df[detail_df["DOT Status"].isin(f_dot_status)]
     if len(f_dot_od) == 2:
         mask = detail_df["Order Date"].isna() | (
-            (detail_df["Order Date"].dt.date >= f_dot_od[0]) &
-            (detail_df["Order Date"].dt.date <= f_dot_od[1])
+            (detail_df["Order Date"] >= pd.Timestamp(f_dot_od[0])) &
+            (detail_df["Order Date"] <= pd.Timestamp(f_dot_od[1]))
         )
         detail_df = detail_df[mask]
     if len(f_dot_dd) == 2:
         mask = detail_df["Delivery Date"].isna() | (
-            (detail_df["Delivery Date"].dt.date >= f_dot_dd[0]) &
-            (detail_df["Delivery Date"].dt.date <= f_dot_dd[1])
+            (detail_df["Delivery Date"] >= pd.Timestamp(f_dot_dd[0])) &
+            (detail_df["Delivery Date"] <= pd.Timestamp(f_dot_dd[1]))
         )
         detail_df = detail_df[mask]
 
