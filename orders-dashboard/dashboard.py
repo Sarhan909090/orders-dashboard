@@ -236,8 +236,11 @@ def get_dot_items() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def get_tracker_orders() -> pd.DataFrame:
-    """Load 'Copy of Data per order' for the tracker (shorter TTL for live feel)."""
-    return load_tracker_orders(PROD_SHEET)
+    """Load 'Copy of Data per order' for the tracker — 2026 orders only."""
+    df = load_tracker_orders(PROD_SHEET)
+    if "Order Date" in df.columns:
+        df = df[df["Order Date"].dt.year == 2026]
+    return df.reset_index(drop=True)
 
 
 @st.cache_data(ttl=30)
