@@ -3,7 +3,8 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
-                     load_production_plan, load_production_items, write_production_status)
+                     load_production_plan, load_production_items, write_production_status,
+                     get_new_production_orders, append_to_2026)
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -1266,3 +1267,65 @@ with tab_production:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Write failed: {e}")
+
+    # ── Sync new orders from Copy of Data per order ────────────────────────
+    st.divider()
+    st.subheader("Sync New Orders → 2026 Sheet")
+    st.caption(
+        "Finds orders in **Copy of Data per order** that are not yet in **2026**, "
+        "and appends them in the correct format. Use the date filter to control which orders to add."
+    )
+
+    if st.button("🔍 Check for new orders", key="prod_check_new"):
+        with st.spinner("Scanning for new orders…"):
+            try:
+                new_orders_df = get_new_production_orders(PROD_SHEET)
+                st.session_state["new_prod_orders"] = new_orders_df
+            except Exception as e:
+                st.error(f"Failed to read sheets: {e}")
+                st.session_state["new_prod_orders"] = pd.DataFrame()
+
+    if "new_prod_orders" in st.session_state and not st.session_state["new_prod_orders"].empty:
+        new_df = st.session_state["new_prod_orders"].copy()
+
+        # Date range filter to avoid syncing thousands of old orders
+        od_new = new_df["Order Date"].dropna()
+        if not od_new.empty:
+            sync_col1, sync_col2, _ = st.columns([2, 2, 2])
+            sync_range = sync_col1.date_input(
+                "Filter by Order Date before syncing",
+                value=(od_new.max().date() - pd.Timedelta(days=90), od_new.max().date()),
+                key="sync_date_range",
+            )
+            if len(sync_range) == 2:
+                new_df = new_df[
+                    new_df["Order Date"].isna() | (
+                        (new_df["Order Date"] >= pd.Timestamp(sync_range[0])) &
+                        (new_df["Order Date"] <= pd.Timestamp(sync_range[1]))
+                    )
+                ]
+
+        n_orders = new_df["SO"].nunique()
+        n_items  = len(new_df)
+        st.info(f"**{n_orders:,} new order(s)** · {n_items:,} item row(s) ready to sync")
+
+        with st.expander(f"Preview {n_items:,} rows to be added"):
+            st.dataframe(
+                fmt_dates(new_df[["SO", "Order Date", "Customer Name", "Order Status",
+                                  "Item Sku", "Item Name", "Item QTY", "Order Class"]]),
+                use_container_width=True,
+            )
+
+        if st.button(f"➕ Add {n_orders:,} order(s) to 2026 sheet", type="primary", key="prod_sync_now"):
+            with st.spinner(f"Appending {n_items:,} rows to 2026…"):
+                try:
+                    added = append_to_2026(PROD_SHEET, new_df)
+                    st.success(f"✅ Added {added:,} row(s) to the 2026 worksheet. Refreshing…")
+                    del st.session_state["new_prod_orders"]
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Append failed: {e}")
+
+    elif "new_prod_orders" in st.session_state:
+        st.success("✅ No new orders found — 2026 sheet is up to date.")

@@ -284,6 +284,95 @@ def write_production_status(sheet_url_or_name: str, so_updates: dict) -> list:
     return updated
 
 
+def get_new_production_orders(sheet_url_or_name: str) -> pd.DataFrame:
+    """Return rows from 'Copy of Data per order' whose SO does not appear in '2026'.
+    Columns returned: SO, Order Date (datetime), Customer Name, Order Status,
+    Item Sku, Item Name, Item QTY, Item Note, Order Class."""
+    creds = _get_creds(SCOPES)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    # SOs already in 2026
+    ws2026 = sheet.worksheet("2026")
+    rows2026 = ws2026.get_all_values()
+    sos_in_2026 = {r[0].strip() for r in rows2026[1:] if r and r[0].strip()}
+
+    # All rows from Copy of Data per order
+    wscopy = sheet.worksheet("Copy of Data per order")
+    rowscopy = wscopy.get_all_values()
+    if len(rowscopy) < 2:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rowscopy[1:], columns=rowscopy[0])
+    df = df.rename(columns={"Order": "SO"})
+    df["Item QTY"] = pd.to_numeric(df["Item QTY"], errors="coerce").fillna(0)
+    df["Order Date"] = pd.to_datetime(df["Order Date"], errors="coerce")
+
+    # Keep only SOs not already in 2026
+    df = df[df["SO"].str.strip().astype(bool)]
+    df = df[~df["SO"].isin(sos_in_2026)]
+
+    keep = ["SO", "Order Date", "Customer Name", "Order Status",
+            "Item Sku", "Item Name", "Item QTY", "Item Note", "Order Class"]
+    return df[[c for c in keep if c in df.columns]].reset_index(drop=True)
+
+
+def append_to_2026(sheet_url_or_name: str, new_df: pd.DataFrame) -> int:
+    """Append rows from new_df to the '2026' worksheet in the correct 27-column format.
+    Returns the number of rows appended."""
+    write_scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = _get_creds(write_scopes)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet("2026")
+
+    def _fmt_date(val):
+        """Convert a datetime / date-string to DD-Mon format used by the 2026 sheet."""
+        try:
+            dt = pd.Timestamp(val)
+            if pd.isna(dt):
+                return ""
+            return f"{dt.day}-{dt.strftime('%b')}"   # e.g. "29-Nov"
+        except Exception:
+            return str(val) if val else ""
+
+    rows_to_append = []
+    for _, row in new_df.iterrows():
+        # 2026 has 27 columns; map only the ones we have data for
+        new_row = [""] * 27
+        new_row[0]  = str(row.get("SO", "")).strip()           # f (SO)
+        new_row[1]  = _fmt_date(row.get("Order Date", ""))     # Date
+        new_row[2]  = str(row.get("Customer Name", "")).strip()# Customer Name
+        new_row[3]  = ""                                        # Statues (Status)
+        new_row[4]  = ""                                        # Status Manu (Production Stage)
+        new_row[5]  = str(row.get("Order Status", "")).strip() # Order Status
+        new_row[6]  = str(row.get("Item Sku", "")).strip()     # Item Ref (blank header)
+        new_row[7]  = str(row.get("Item Name", "")).strip()    # Descreption (Description)
+        new_row[8]  = str(int(row["Item QTY"])) if row.get("Item QTY", 0) else ""  # QTY
+        new_row[9]  = str(row.get("Item Note", "")).strip()    # Item Note
+        # cols 10-16 left blank (Delivery Date, Deci Factory, Fabrics, Marble, etc.)
+        new_row[17] = str(row.get("Order Class", "")).strip()  # Order Class
+        # cols 18-26 left blank
+        rows_to_append.append(new_row)
+
+    if rows_to_append:
+        ws.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+
+    return len(rows_to_append)
+
+
 if __name__ == "__main__":
     SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
     df = load_orders(SHEET)
