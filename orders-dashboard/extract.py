@@ -157,6 +157,105 @@ def write_dot_tags(sheet_url_or_name: str, so_tag_map: dict, worksheet_name: str
     return [so for so in so_tag_map if so in so_row_map]
 
 
+_TRACKER_STATUS_TAB   = "Order Status"
+_TRACKER_STATUS_HEADS = ["SO", "Status", "Production Stage", "Updated At"]
+
+_WRITE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+
+def _open_sheet(sheet_url_or_name: str, scopes):
+    creds  = _get_creds(scopes)
+    client = gspread.authorize(creds)
+    return client.open_by_url(sheet_url_or_name) if sheet_url_or_name.startswith("http") \
+           else client.open(sheet_url_or_name)
+
+
+def load_tracker_orders(sheet_url_or_name: str) -> pd.DataFrame:
+    """Read 'Copy of Data per order' and return a clean tracker DataFrame.
+    Columns: SO, Order Date, Customer Name, Order Status,
+             Item Sku, Item Name, Item QTY, Item Note,
+             Picking Ship Date, Order Ship Date, Order Class."""
+    sheet = _open_sheet(sheet_url_or_name, SCOPES)
+    ws    = sheet.worksheet("Copy of Data per order")
+    rows  = ws.get_all_values()
+    if len(rows) < 2:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    df = df.rename(columns={"Order": "SO"})
+
+    for col in ["Order Date", "Picking Ship Date", "Order Ship Date"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    if "Item QTY" in df.columns:
+        df["Item QTY"] = pd.to_numeric(df["Item QTY"], errors="coerce").fillna(0)
+
+    df = df[df["SO"].astype(str).str.strip().astype(bool)].reset_index(drop=True)
+    return df
+
+
+def ensure_order_status_tab(sheet_url_or_name: str) -> None:
+    """Create the 'Order Status' worksheet with headers if it doesn't exist yet."""
+    sheet = _open_sheet(sheet_url_or_name, _WRITE_SCOPES)
+    existing = [ws.title for ws in sheet.worksheets()]
+    if _TRACKER_STATUS_TAB not in existing:
+        ws = sheet.add_worksheet(_TRACKER_STATUS_TAB, rows=1000, cols=len(_TRACKER_STATUS_HEADS))
+        ws.append_row(_TRACKER_STATUS_HEADS)
+
+
+def load_order_statuses(sheet_url_or_name: str) -> pd.DataFrame:
+    """Read all rows from the 'Order Status' tab.
+    Returns DataFrame with columns: SO, Status, Production Stage, Updated At."""
+    sheet = _open_sheet(sheet_url_or_name, SCOPES)
+    try:
+        ws   = sheet.worksheet(_TRACKER_STATUS_TAB)
+        rows = ws.get_all_values()
+    except gspread.exceptions.WorksheetNotFound:
+        return pd.DataFrame(columns=_TRACKER_STATUS_HEADS)
+
+    if len(rows) < 2:
+        return pd.DataFrame(columns=_TRACKER_STATUS_HEADS)
+
+    return pd.DataFrame(rows[1:], columns=rows[0])
+
+
+def upsert_order_status(sheet_url_or_name: str,
+                        so: str,
+                        status: str,
+                        production_stage: str) -> None:
+    """Insert or update a row in 'Order Status' keyed by SO.
+    Reads the current sheet state, finds the matching row (or appends),
+    and writes in a single API call to minimise race conditions."""
+    import datetime
+    sheet = _open_sheet(sheet_url_or_name, _WRITE_SCOPES)
+    ws    = sheet.worksheet(_TRACKER_STATUS_TAB)
+    rows  = ws.get_all_values()
+
+    updated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    new_row    = [so, status, production_stage, updated_at]
+
+    if len(rows) <= 1:                           # header only / empty
+        ws.append_row(new_row)
+        return
+
+    headers = rows[0]
+    so_col  = headers.index("SO") if "SO" in headers else 0
+
+    for i, row in enumerate(rows[1:], start=2):  # 1-based; row 1 is header
+        if so_col < len(row) and row[so_col].strip() == so.strip():
+            # Update in-place (all four columns)
+            col_start = gspread.utils.rowcol_to_a1(i, 1)
+            col_end   = gspread.utils.rowcol_to_a1(i, len(_TRACKER_STATUS_HEADS))
+            ws.update(f"{col_start}:{col_end}", [new_row])
+            return
+
+    ws.append_row(new_row)   # SO not found → add new row
+
+
 if __name__ == "__main__":
     SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
     df = load_orders(SHEET)

@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-from extract import load_orders, load_unit_counts, load_dot_items, write_dot_tags
+from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
+                     load_tracker_orders, ensure_order_status_tab,
+                     load_order_statuses, upsert_order_status)
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -11,7 +13,18 @@ if col_refresh.button("🔄 Refresh", help="Reload all data from Google Sheet"):
     st.cache_data.clear()
     st.rerun()
 
-SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
+SHEET      = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
+PROD_SHEET = "https://docs.google.com/spreadsheets/d/1zpdNjDFPRi7RCvMImn3-soW0P3dYubS1d76FwsjfL28/edit"
+
+# ── SLA CONFIG — edit these values to set your rule ──────────────────────────
+SLA_CONFIG = {
+    "start_column":      "Order Date",        # ← CHANGE: column that starts the clock
+    "target_days":       14,                  # ← CHANGE: calendar days until deadline
+    "at_risk_days":      3,                   # ← CHANGE: days remaining when colour turns amber
+    "clock":             "calendar",          # "calendar" only (business-hours not yet impl.)
+    "terminal_statuses": ["Completed", "Cancelled"],  # clock stops for these statuses
+}
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def week_start(date):
@@ -221,10 +234,30 @@ def get_dot_items() -> pd.DataFrame:
     return load_dot_items(SHEET)
 
 
+@st.cache_data(ttl=60)
+def get_tracker_orders() -> pd.DataFrame:
+    """Load 'Copy of Data per order' for the tracker (shorter TTL for live feel)."""
+    return load_tracker_orders(PROD_SHEET)
+
+
+@st.cache_data(ttl=30)
+def get_order_statuses() -> pd.DataFrame:
+    """Load the 'Order Status' write-back tab (very short TTL — status changes must be fresh)."""
+    return load_order_statuses(PROD_SHEET)
+
+
 df = get_data()
 dot_items_df = get_dot_items()
 
-tab_orders, tab_kpi, tab_dot = st.tabs(["Orders", "Delivery KPI", "DOT Orders"])
+# Ensure the Order Status tab exists in the Production Planning Sheet
+try:
+    ensure_order_status_tab(PROD_SHEET)
+except Exception:
+    pass   # non-fatal: if it already exists or there's a transient error, continue
+
+tab_orders, tab_kpi, tab_dot, tab_tracker = st.tabs(
+    ["Orders", "Delivery KPI", "DOT Orders", "Orders Tracker"]
+)
 
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 1 — ORDERS
@@ -954,4 +987,222 @@ with tab_dot:
                         st.session_state["discarded_dot_sos"].add(so)
                     st.rerun()
 
-# Production tab removed — will be rebuilt from scratch
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — ORDERS TRACKER
+# ════════════════════════════════════════════════════════════════════════════
+with tab_tracker:
+    st.subheader("Orders Tracker")
+
+    # ── Load data ──────────────────────────────────────────────────────────
+    tracker_orders  = get_tracker_orders()
+    tracker_statuses = get_order_statuses()
+
+    if tracker_orders.empty:
+        st.warning("No orders found in 'Copy of Data per order'.")
+        st.stop()
+
+    # ── Merge status into orders ───────────────────────────────────────────
+    # status store is keyed by SO; merge on the first occurrence per SO
+    if not tracker_statuses.empty:
+        status_lookup = (
+            tracker_statuses[["SO", "Status", "Production Stage"]]
+            .drop_duplicates(subset="SO")
+        )
+        tdf = tracker_orders.merge(status_lookup, on="SO", how="left")
+    else:
+        tdf = tracker_orders.copy()
+        tdf["Status"] = ""
+        tdf["Production Stage"] = ""
+
+    tdf["Status"]           = tdf["Status"].fillna("")
+    tdf["Production Stage"] = tdf["Production Stage"].fillna("")
+
+    # ── SLA computation ────────────────────────────────────────────────────
+    today_ts   = pd.Timestamp.today().normalize()
+    start_col  = SLA_CONFIG["start_column"]
+    target_d   = SLA_CONFIG["target_days"]
+    at_risk_d  = SLA_CONFIG["at_risk_days"]
+    terminal   = SLA_CONFIG["terminal_statuses"]
+
+    if start_col in tdf.columns:
+        tdf["_deadline"] = tdf[start_col] + pd.Timedelta(days=target_d)
+        tdf["_days_left"] = (tdf["_deadline"] - today_ts).dt.days
+
+        def _sla_status(row):
+            if row["Status"] in terminal:
+                return "Done"
+            if pd.isna(row["_days_left"]):
+                return "No Date"
+            if row["_days_left"] < 0:
+                return "Breached"
+            if row["_days_left"] <= at_risk_d:
+                return "At Risk"
+            return "On Track"
+
+        tdf["SLA Status"]    = tdf.apply(_sla_status, axis=1)
+        tdf["SLA Countdown"] = tdf.apply(
+            lambda r: "—" if r["SLA Status"] in ("Done", "No Date") else
+                      (f"{int(-r['_days_left'])}d overdue" if r["_days_left"] < 0 else
+                       ("TODAY" if r["_days_left"] == 0 else f"{int(r['_days_left'])}d left")),
+            axis=1,
+        )
+        tdf["_deadline_str"] = tdf["_deadline"].dt.strftime("%d-%b-%Y").where(tdf["_deadline"].notna(), "—")
+    else:
+        tdf["SLA Status"]    = "No Date"
+        tdf["SLA Countdown"] = "—"
+        tdf["_deadline_str"] = "—"
+
+    SLA_ORDER = ["Breached", "At Risk", "On Track", "No Date", "Done"]
+    SLA_COLOUR = {
+        "Breached": "🔴", "At Risk": "🟡", "On Track": "🟢",
+        "No Date": "⚪", "Done": "✅",
+    }
+
+    # ── Filters ────────────────────────────────────────────────────────────
+    with st.expander("🔽 Filters", expanded=True):
+        fc1, fc2, fc3, fc4 = st.columns(4)
+
+        sla_filter = fc1.multiselect(
+            "SLA Status",
+            SLA_ORDER,
+            default=["Breached", "At Risk"],
+            key="tr_sla",
+        )
+        status_opts = sorted(tdf["Status"].replace("", "— no status —").unique().tolist())
+        status_filter = fc2.multiselect("Order Status", status_opts, key="tr_status")
+        cust_filter   = fc3.text_input("Customer Name", key="tr_cust").strip()
+
+        od_vals = tdf["Order Date"].dropna() if "Order Date" in tdf.columns else pd.Series([], dtype="datetime64[ns]")
+        if not od_vals.empty:
+            date_filter = fc4.date_input(
+                "Order Date range",
+                value=(od_vals.max().date() - pd.Timedelta(days=90), od_vals.max().date()),
+                key="tr_date",
+            )
+        else:
+            date_filter = ()
+
+    # Apply filters
+    view = tdf.copy()
+    if sla_filter:
+        view = view[view["SLA Status"].isin(sla_filter)]
+    if status_filter:
+        view = view[view["Status"].replace("", "— no status —").isin(status_filter)]
+    if cust_filter:
+        view = view[view["Customer Name"].str.contains(cust_filter, case=False, na=False)]
+    if len(date_filter) == 2 and "Order Date" in view.columns:
+        mask = view["Order Date"].isna() | (
+            (view["Order Date"] >= pd.Timestamp(date_filter[0])) &
+            (view["Order Date"] <= pd.Timestamp(date_filter[1]))
+        )
+        view = view[mask]
+
+    # ── Summary KPI strip ──────────────────────────────────────────────────
+    n_total    = view["SO"].nunique()
+    n_breached = (view["SLA Status"] == "Breached").sum()
+    n_at_risk  = (view["SLA Status"] == "At Risk").sum()
+    n_on_track = (view["SLA Status"] == "On Track").sum()
+    n_done     = (view["SLA Status"] == "Done").sum()
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Orders shown",  f"{n_total:,}")
+    k2.metric("🔴 Breached",   f"{n_breached:,}")
+    k3.metric("🟡 At Risk",    f"{n_at_risk:,}")
+    k4.metric("🟢 On Track",   f"{n_on_track:,}")
+    k5.metric("✅ Done",       f"{n_done:,}")
+
+    st.divider()
+
+    # ── Read-only summary table ─────────────────────────────────────────────
+    st.subheader("Order List")
+    st.caption(f"{len(view):,} item row(s) across {n_total:,} order(s)  ·  "
+               f"SLA start: **{start_col}** + {target_d} days  ·  "
+               f"At-risk threshold: {at_risk_d} days")
+
+    display_cols = ["SO", "Customer Name", "Order Date", "Item Sku", "Item Name",
+                    "Item QTY", "Order Status", "Status", "Production Stage",
+                    "SLA Status", "SLA Countdown", "_deadline_str", "Item Note"]
+    table_view = view[[c for c in display_cols if c in view.columns]].rename(columns={
+        "_deadline_str": "SLA Deadline",
+    }).copy()
+
+    # Prepend SLA colour icon to SLA Status for quick scanning
+    if "SLA Status" in table_view.columns:
+        table_view["SLA Status"] = table_view["SLA Status"].apply(
+            lambda s: f"{SLA_COLOUR.get(s, '')} {s}"
+        )
+
+    st.dataframe(fmt_dates(table_view), use_container_width=True)
+
+    # ── Status editor ──────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Update Status")
+    st.caption("Edit Status and Production Stage per order, then click **Save**. "
+               "Changes write immediately to the Order Status sheet.")
+
+    STATUS_OPTS = ["", "Cancel", "Claim", "Completed",
+                   "Pending Client Confirmation", "Ready"]
+    STAGE_OPTS  = ["", "Assembly", "Cutting", "Final Quality", "Painting",
+                   "Painting Prep", "Procurement", "Sponging", "Upholstery",
+                   "Veneer Final", "Veneer Internal", "Wood Work", "Completed"]
+
+    # Deduplicate to one row per SO for the editor
+    so_summary = (
+        view.drop_duplicates(subset="SO")[
+            ["SO", "Customer Name", "Order Date", "Order Status",
+             "Status", "Production Stage", "SLA Status", "SLA Countdown"]
+        ].sort_values(
+            "SLA Status",
+            key=lambda s: s.map({v: i for i, v in enumerate(SLA_ORDER)}).fillna(99),
+        ).reset_index(drop=True)
+    )
+
+    if so_summary.empty:
+        st.info("No orders match the current filters.")
+    else:
+        # Column headers
+        h = st.columns([1.5, 2, 1.2, 1.2, 1.8, 2, 2, 1])
+        for col, label in zip(h, ["SO", "Customer", "Order Date", "SLA",
+                                   "Order Status", "Status", "Production Stage", ""]):
+            col.caption(label)
+        st.divider()
+
+        saved_sos = []
+        for _, row in so_summary.iterrows():
+            so       = row["SO"]
+            cur_s    = row["Status"]
+            cur_g    = row["Production Stage"]
+            sla_disp = f"{SLA_COLOUR.get(row['SLA Status'].split(' ')[-1] if ' ' in str(row['SLA Status']) else row['SLA Status'], '')} {row['SLA Countdown']}"
+
+            s_idx = STATUS_OPTS.index(cur_s) if cur_s in STATUS_OPTS else 0
+            g_idx = STAGE_OPTS.index(cur_g)  if cur_g  in STAGE_OPTS  else 0
+
+            od_str = (pd.Timestamp(row["Order Date"]).strftime("%d-%b-%Y")
+                      if pd.notna(row.get("Order Date")) else "—")
+
+            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.5, 2, 1.2, 1.2, 1.8, 2, 2, 1])
+            c1.markdown(f"**{so}**")
+            c2.write(row["Customer Name"])
+            c3.write(od_str)
+            c4.write(row["SLA Countdown"])
+            c5.write(row["Order Status"])
+            c6.selectbox("s", STATUS_OPTS, index=s_idx,
+                         key=f"tr_s_{so}", label_visibility="collapsed")
+            c7.selectbox("g", STAGE_OPTS,  index=g_idx,
+                         key=f"tr_g_{so}", label_visibility="collapsed")
+
+            if c8.button("💾", key=f"tr_save_{so}", help=f"Save {so}"):
+                new_s = st.session_state.get(f"tr_s_{so}", cur_s)
+                new_g = st.session_state.get(f"tr_g_{so}", cur_g)
+                with st.spinner(f"Saving {so}…"):
+                    try:
+                        upsert_order_status(PROD_SHEET, so, new_s, new_g)
+                        saved_sos.append(so)
+                    except Exception as e:
+                        st.error(f"Save failed for {so}: {e}")
+
+        if saved_sos:
+            st.success(f"Saved: {', '.join(saved_sos)}")
+            st.cache_data.clear()
+            st.rerun()
