@@ -114,6 +114,70 @@ def load_unit_counts(sheet_url_or_name: str) -> pd.DataFrame:
     )
 
 
+def load_production_plan(sheet_url_or_name: str, worksheet_name: str = "2026") -> pd.DataFrame:
+    """Reads the production planning worksheet — one row per item.
+    Renames raw columns to clean names; blank column 6 becomes 'Item Ref'."""
+    creds = _get_creds(SCOPES)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet(worksheet_name)
+    rows = ws.get_all_values()
+    if not rows:
+        return pd.DataFrame()
+
+    # Build unique headers — blank/duplicate cols get a positional suffix
+    raw_headers = rows[0]
+    seen = {}
+    headers = []
+    for i, h in enumerate(raw_headers):
+        key = h.strip() if h.strip() else f"_col{i}"
+        if key in seen:
+            seen[key] += 1
+            key = f"{key}_{seen[key]}"
+        else:
+            seen[key] = 0
+        headers.append(key)
+
+    df = pd.DataFrame(rows[1:], columns=headers)
+
+    # Rename to clean names (headers have already been .strip()-ed)
+    rename_map = {
+        "f": "SO",
+        "Date": "Order Date",
+        "Statues": "Status",
+        "Status Manu": "Production Stage",
+        "Descreption": "Description",
+        "_col6": "Item Ref",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    return df
+
+
+def load_production_items(sheet_url_or_name: str) -> pd.DataFrame:
+    """Reads the 'Data per order' worksheet from the production sheet for SKU-level detail."""
+    creds = _get_creds(SCOPES)
+    client = gspread.authorize(creds)
+
+    if sheet_url_or_name.startswith("http"):
+        sheet = client.open_by_url(sheet_url_or_name)
+    else:
+        sheet = client.open(sheet_url_or_name)
+
+    ws = sheet.worksheet("Data per order")
+    rows = ws.get_all_values()
+    if not rows:
+        return pd.DataFrame(columns=["SO", "Item Sku", "Item Name", "Item QTY"])
+
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    df["Item QTY"] = pd.to_numeric(df["Item QTY"], errors="coerce").fillna(0)
+    return df.rename(columns={"Order": "SO"})
+
+
 def write_dot_tags(sheet_url_or_name: str, so_tag_map: dict, worksheet_name: str = "Orders Plan ") -> list:
     """Update the Status cell for each SO in so_tag_map. Returns list of SOs updated."""
     write_scopes = [
