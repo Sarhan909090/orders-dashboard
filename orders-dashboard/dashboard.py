@@ -1139,76 +1139,57 @@ with tab_tracker:
             lambda s: f"{SLA_COLOUR.get(s, '')} {s}"
         )
 
-    st.dataframe(fmt_dates(table_view), use_container_width=True)
-
-    # ── Status editor ──────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("Update Status")
-    st.caption("Edit Status and Production Stage per order, then click **Save**. "
-               "Changes write immediately to the Order Status sheet.")
-
     STATUS_OPTS = ["", "Cancel", "Claim", "Completed",
                    "Pending Client Confirmation", "Ready"]
     STAGE_OPTS  = ["", "Assembly", "Cutting", "Final Quality", "Painting",
                    "Painting Prep", "Procurement", "Sponging", "Upholstery",
                    "Veneer Final", "Veneer Internal", "Wood Work", "Completed"]
 
-    # Deduplicate to one row per SO for the editor
-    so_summary = (
-        view.drop_duplicates(subset="SO")[
-            ["SO", "Customer Name", "Order Date", "Order Status",
-             "Status", "Production Stage", "SLA Status", "SLA Countdown"]
-        ].sort_values(
-            "SLA Status",
-            key=lambda s: s.map({v: i for i, v in enumerate(SLA_ORDER)}).fillna(99),
-        ).reset_index(drop=True)
+    display_df = fmt_dates(table_view)   # dates → strings; Status/Stage stay as-is
+
+    edited = st.data_editor(
+        display_df,
+        column_config={
+            "Status": st.column_config.SelectboxColumn(
+                "Status", options=STATUS_OPTS, required=False,
+            ),
+            "Production Stage": st.column_config.SelectboxColumn(
+                "Production Stage", options=STAGE_OPTS, required=False,
+            ),
+        },
+        disabled=[c for c in display_df.columns if c not in ("Status", "Production Stage")],
+        hide_index=True,
+        use_container_width=True,
+        key="tracker_editor",
     )
 
-    if so_summary.empty:
-        st.info("No orders match the current filters.")
-    else:
-        # Column headers
-        h = st.columns([1.5, 2, 1.2, 1.2, 1.8, 2, 2, 1])
-        for col, label in zip(h, ["SO", "Customer", "Order Date", "SLA",
-                                   "Order Status", "Status", "Production Stage", ""]):
-            col.caption(label)
-        st.divider()
+    # ── Detect changes and offer a single Save button ──────────────────────
+    if "Status" in table_view.columns and "Production Stage" in table_view.columns:
+        orig_s = table_view["Status"].fillna("").reset_index(drop=True)
+        orig_g = table_view["Production Stage"].fillna("").reset_index(drop=True)
+        new_s  = edited["Status"].fillna("").reset_index(drop=True)
+        new_g  = edited["Production Stage"].fillna("").reset_index(drop=True)
 
-        saved_sos = []
-        for _, row in so_summary.iterrows():
-            so       = row["SO"]
-            cur_s    = row["Status"]
-            cur_g    = row["Production Stage"]
-            sla_disp = f"{SLA_COLOUR.get(row['SLA Status'].split(' ')[-1] if ' ' in str(row['SLA Status']) else row['SLA Status'], '')} {row['SLA Countdown']}"
+        changed_mask = (new_s != orig_s) | (new_g != orig_g)
+        changed_sos  = (
+            edited[changed_mask.values]
+            .drop_duplicates(subset="SO")[["SO", "Status", "Production Stage"]]
+        )
 
-            s_idx = STATUS_OPTS.index(cur_s) if cur_s in STATUS_OPTS else 0
-            g_idx = STAGE_OPTS.index(cur_g)  if cur_g  in STAGE_OPTS  else 0
-
-            od_str = (pd.Timestamp(row["Order Date"]).strftime("%d-%b-%Y")
-                      if pd.notna(row.get("Order Date")) else "—")
-
-            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.5, 2, 1.2, 1.2, 1.8, 2, 2, 1])
-            c1.markdown(f"**{so}**")
-            c2.write(row["Customer Name"])
-            c3.write(od_str)
-            c4.write(row["SLA Countdown"])
-            c5.write(row["Order Status"])
-            c6.selectbox("s", STATUS_OPTS, index=s_idx,
-                         key=f"tr_s_{so}", label_visibility="collapsed")
-            c7.selectbox("g", STAGE_OPTS,  index=g_idx,
-                         key=f"tr_g_{so}", label_visibility="collapsed")
-
-            if c8.button("💾", key=f"tr_save_{so}", help=f"Save {so}"):
-                new_s = st.session_state.get(f"tr_s_{so}", cur_s)
-                new_g = st.session_state.get(f"tr_g_{so}", cur_g)
-                with st.spinner(f"Saving {so}…"):
-                    try:
-                        upsert_order_status(PROD_SHEET, so, new_s, new_g)
-                        saved_sos.append(so)
-                    except Exception as e:
-                        st.error(f"Save failed for {so}: {e}")
-
-        if saved_sos:
-            st.success(f"Saved: {', '.join(saved_sos)}")
-            st.cache_data.clear()
-            st.rerun()
+        if not changed_sos.empty:
+            if st.button(f"💾 Save {len(changed_sos):,} change(s)",
+                         type="primary", key="tr_save_all"):
+                with st.spinner("Saving…"):
+                    errors = []
+                    for _, r in changed_sos.iterrows():
+                        try:
+                            upsert_order_status(PROD_SHEET, r["SO"],
+                                                r["Status"], r["Production Stage"])
+                        except Exception as e:
+                            errors.append(f"{r['SO']}: {e}")
+                if errors:
+                    st.error("Some saves failed:\n" + "\n".join(errors))
+                else:
+                    st.success(f"Saved {len(changed_sos):,} order(s). Refreshing…")
+                    st.cache_data.clear()
+                    st.rerun()
