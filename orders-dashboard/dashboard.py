@@ -1182,11 +1182,16 @@ with tab_tracker:
                          type="primary", key="tr_save_all"):
                 with st.spinner("Saving…"):
                     errors = []
+                    # Normalise: SelectboxColumn returns Python None for blank option;
+                    # convert to "" so gspread writes an empty cell (not null)
+                    def _clean(v):
+                        return "" if (v is None or str(v) == "None") else str(v)
+
                     # Build update map for batch write to 2026
                     so_updates = {
                         r["SO"]: {
-                            "Status":           r["Status"],
-                            "Production Stage": r["Production Stage"],
+                            "Status":           _clean(r["Status"]),
+                            "Production Stage": _clean(r["Production Stage"]),
                         }
                         for _, r in changed_sos.iterrows()
                     }
@@ -1199,7 +1204,8 @@ with tab_tracker:
                     for _, r in changed_sos.iterrows():
                         try:
                             upsert_order_status(PROD_SHEET, r["SO"],
-                                                r["Status"], r["Production Stage"])
+                                                _clean(r["Status"]),
+                                                _clean(r["Production Stage"]))
                         except Exception as e:
                             errors.append(f"{r['SO']} (status tab): {e}")
                 if errors:

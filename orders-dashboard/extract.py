@@ -194,6 +194,10 @@ def write_production_status(sheet_url_or_name: str, so_updates: dict) -> list:
         if so:
             so_row_map.setdefault(so, []).append(i + 2)
 
+    def _safe(v):
+        """Convert None / 'None' to '' so gspread writes an empty cell."""
+        return "" if (v is None or str(v) == "None") else str(v)
+
     updates = []
     updated = []
     for so, changes in so_updates.items():
@@ -203,12 +207,12 @@ def write_production_status(sheet_url_or_name: str, so_updates: dict) -> list:
             if "Status" in changes and status_col is not None:
                 updates.append({
                     "range":  gspread.utils.rowcol_to_a1(row_num, status_col + 1),
-                    "values": [[changes["Status"]]],
+                    "values": [[_safe(changes["Status"])]],
                 })
             if "Production Stage" in changes and stage_col is not None:
                 updates.append({
                     "range":  gspread.utils.rowcol_to_a1(row_num, stage_col + 1),
-                    "values": [[changes["Production Stage"]]],
+                    "values": [[_safe(changes["Production Stage"])]],
                 })
         updated.append(so)
 
