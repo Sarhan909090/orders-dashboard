@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-from extract import load_orders, load_unit_counts, load_dot_items, write_dot_tags, load_production_plan, load_production_items
+from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
+                     load_production_plan, load_production_items, write_production_status)
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -224,45 +225,39 @@ def get_dot_items() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def get_production_data() -> pd.DataFrame:
-    """Load and enrich the 2026 production planning worksheet."""
-    import datetime
-    df = load_production_plan(PROD_SHEET)
+    """Load and enrich Data per order as the sole production data source."""
+    df = load_production_items(PROD_SHEET)
 
-    # Parse "DD-Mon" Order Date (no year in sheet) — infer year from current date
-    today = datetime.date.today()
+    # Parse dates
+    for col in ["Order Date", "Picking Ship Date", "Order Ship Date"]:
+        df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
 
-    def _parse_prod_date(s):
-        s = str(s).strip()
-        if not s or s.lower() == "nan":
-            return pd.NaT
-        for year in [today.year, today.year - 1]:
-            try:
-                return pd.to_datetime(f"{s}-{year}", format="%d-%b-%Y")
-            except Exception:
-                pass
-        return pd.NaT
-
-    df["Order Date"] = df["Order Date"].apply(_parse_prod_date)
-    # Months later in the year than today → belong to the previous year
-    df["Order Date"] = df["Order Date"].apply(
-        lambda d: d.replace(year=today.year - 1)
-        if pd.notna(d) and d.month > today.month else d
-    )
-
-    # Parse Delivery Date (flexible — may be blank or various formats)
-    df["Delivery Date"] = pd.to_datetime(df["Delivery Date"], dayfirst=True, errors="coerce")
-
-    # SLA Timer: days until delivery (negative = overdue)
+    # SLA Timer: days until Picking Ship Date for unshipped items
     today_ts = pd.Timestamp.today().normalize()
-    df["SLA Timer"] = (df["Delivery Date"] - today_ts).dt.days
-    df["SLA Label"] = df["SLA Timer"].apply(
-        lambda d: "—" if pd.isna(d) else
-                  ("TODAY" if d == 0 else
-                  (f"{int(d)} days left" if d > 0 else f"{int(-d)} days overdue"))
+    df["SLA Timer"] = df.apply(
+        lambda r: (r["Picking Ship Date"] - today_ts).days
+                  if pd.notna(r["Picking Ship Date"]) and pd.isna(r["Order Ship Date"])
+                  else np.nan,
+        axis=1,
     )
 
-    # Numeric QTY
-    df["QTY"] = pd.to_numeric(df["QTY"], errors="coerce").fillna(0)
+    def _sla_label(row):
+        if pd.notna(row["Order Ship Date"]):
+            return "Shipped"
+        if pd.isna(row["Picking Ship Date"]):
+            return "—"
+        d = row["SLA Timer"]
+        if pd.isna(d):
+            return "—"
+        if d == 0:
+            return "TODAY"
+        return f"{int(d)} days left" if d > 0 else f"{int(-d)} days overdue"
+
+    df["SLA Label"] = df.apply(_sla_label, axis=1)
+
+    # Numeric columns
+    for col in ["Item QTY", "Over Due", "Order Total"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     # Drop blank SO rows
     df = df[df["SO"].astype(str).str.strip().astype(bool)]
@@ -270,14 +265,24 @@ def get_production_data() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def get_production_items() -> pd.DataFrame:
-    return load_production_items(PROD_SHEET)
+def get_production_status() -> pd.DataFrame:
+    """Read current Status and Production Stage per SO from the 2026 worksheet."""
+    plan = load_production_plan(PROD_SHEET)
+    return (
+        plan[["SO", "Status", "Production Stage"]]
+        .replace("", pd.NA)
+        .dropna(subset=["SO"])
+        .groupby("SO")[["Status", "Production Stage"]]
+        .first()
+        .reset_index()
+        .fillna("")
+    )
 
 
 df = get_data()
 dot_items_df = get_dot_items()
 prod_df = get_production_data()
-prod_items_df = get_production_items()
+prod_status_df = get_production_status()
 
 tab_orders, tab_kpi, tab_dot, tab_production = st.tabs(["Orders", "Delivery KPI", "DOT Orders", "Production"])
 
@@ -1020,11 +1025,11 @@ with tab_production:
     with st.expander("🔽 Filters", expanded=False):
         fc1, fc2, fc3, fc4 = st.columns(4)
 
-        p_status_opts = sorted(prod_df["Status"].replace("", pd.NA).dropna().unique().tolist())
-        f_prod_status = fc1.multiselect("Status", p_status_opts, key="prod_f_status")
+        p_status_opts = sorted(prod_df["Order Status"].replace("", pd.NA).dropna().unique().tolist())
+        f_prod_status = fc1.multiselect("Order Status", p_status_opts, key="prod_f_status")
 
-        p_stage_opts = sorted(prod_df["Production Stage"].replace("", pd.NA).dropna().unique().tolist())
-        f_prod_stage  = fc2.multiselect("Production Stage", p_stage_opts, key="prod_f_stage")
+        p_class_opts = sorted(prod_df["Order Class"].replace("", pd.NA).dropna().unique().tolist())
+        f_prod_class  = fc2.multiselect("Order Class", p_class_opts, key="prod_f_class")
 
         f_prod_cust = fc3.text_input("Customer Name", key="prod_f_cust").strip()
 
@@ -1033,7 +1038,7 @@ with tab_production:
             horizontal=True, key="prod_f_sla",
         )
 
-        fc5, _, _, _ = st.columns(4)
+        fc5, fc6, _, _ = st.columns(4)
         od_prod = prod_df["Order Date"].dropna()
         if not od_prod.empty:
             f_prod_od = fc5.date_input(
@@ -1041,13 +1046,20 @@ with tab_production:
             )
         else:
             f_prod_od = ()
+        ps_prod = prod_df["Picking Ship Date"].dropna()
+        if not ps_prod.empty:
+            f_prod_ps = fc6.date_input(
+                "Picking Ship Date", value=(ps_prod.min().date(), ps_prod.max().date()), key="prod_f_ps"
+            )
+        else:
+            f_prod_ps = ()
 
     # ── Apply filters ──────────────────────────────────────────────────────
     pf = prod_df.copy()
     if f_prod_status:
-        pf = pf[pf["Status"].isin(f_prod_status)]
-    if f_prod_stage:
-        pf = pf[pf["Production Stage"].isin(f_prod_stage)]
+        pf = pf[pf["Order Status"].isin(f_prod_status)]
+    if f_prod_class:
+        pf = pf[pf["Order Class"].isin(f_prod_class)]
     if f_prod_cust:
         pf = pf[pf["Customer Name"].str.contains(f_prod_cust, case=False, na=False)]
     if f_prod_sla == "Overdue only":
@@ -1060,115 +1072,118 @@ with tab_production:
             (pf["Order Date"] <= pd.Timestamp(f_prod_od[1]))
         )
         pf = pf[mask]
+    if len(f_prod_ps) == 2:
+        mask = pf["Picking Ship Date"].isna() | (
+            (pf["Picking Ship Date"] >= pd.Timestamp(f_prod_ps[0])) &
+            (pf["Picking Ship Date"] <= pd.Timestamp(f_prod_ps[1]))
+        )
+        pf = pf[mask]
 
     # ── KPI Row 1 ──────────────────────────────────────────────────────────
     total_prod_orders = pf["SO"].nunique()
-    total_prod_items  = int(pf["QTY"].sum())
-    n_in_production   = pf[~pf["Status"].isin(["Cancel", "Completed"])]["SO"].nunique()
-    n_completed       = pf[pf["Status"] == "Completed"]["SO"].nunique()
+    total_prod_items  = int(pf["Item QTY"].sum())
+    n_shipped   = pf[pf["Order Ship Date"].notna()]["SO"].nunique()
+    n_overdue   = pf[pf["SLA Timer"].notna() & (pf["SLA Timer"] < 0)]["SO"].nunique()
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Orders",   f"{total_prod_orders:,}")
-    k2.metric("Total Items",    f"{total_prod_items:,}")
-    k3.metric("In Production",  f"{n_in_production:,}")
-    k4.metric("Completed",      f"{n_completed:,}")
+    k1.metric("Total Orders",  f"{total_prod_orders:,}")
+    k2.metric("Total Items",   f"{total_prod_items:,}")
+    k3.metric("Shipped",       f"{n_shipped:,}")
+    k4.metric("Overdue",       f"{n_overdue:,}")
 
-    # ── KPI Row 2 — top 5 production stages ───────────────────────────────
-    stage_counts = (
-        pf[pf["Production Stage"].str.strip().astype(bool)]
-        .groupby("Production Stage").size()
+    # ── KPI Row 2 — top 5 order classes ───────────────────────────────────
+    class_counts = (
+        pf[pf["Order Class"].str.strip().astype(bool)]
+        .groupby("Order Class")["SO"].nunique()
         .sort_values(ascending=False).head(5)
     )
-    if not stage_counts.empty:
-        stage_cols = st.columns(len(stage_counts))
-        for i, (stage, count) in enumerate(stage_counts.items()):
-            stage_cols[i].metric(stage, f"{count:,}")
+    if not class_counts.empty:
+        cls_cols = st.columns(len(class_counts))
+        for i, (cls, count) in enumerate(class_counts.items()):
+            cls_cols[i].metric(cls, f"{count:,}")
 
     st.divider()
     col_a, col_b = st.columns(2)
 
-    # ── Chart: Items by Production Stage ──────────────────────────────────
+    # ── Chart: Items by Order Class ────────────────────────────────────────
     with col_a:
-        stage_chart = (
-            pf[pf["Production Stage"].str.strip().astype(bool)]
-            .groupby("Production Stage").size()
+        class_chart = (
+            pf[pf["Order Class"].str.strip().astype(bool)]
+            .groupby("Order Class")["Item QTY"].sum()
             .reset_index(name="Items")
             .sort_values("Items", ascending=False)
         )
-        if not stage_chart.empty:
-            fig_stage = px.bar(
-                stage_chart, x="Production Stage", y="Items",
-                color="Production Stage", title="Items by Production Stage",
+        if not class_chart.empty:
+            fig_class = px.bar(
+                class_chart, x="Order Class", y="Items",
+                color="Order Class", title="Items by Order Class",
             )
-            fig_stage.update_layout(showlegend=False)
-            st.plotly_chart(fig_stage, use_container_width=True)
+            fig_class.update_layout(showlegend=False)
+            st.plotly_chart(fig_class, use_container_width=True)
         else:
-            st.info("No production stage data for the selected filters.")
+            st.info("No order class data for the selected filters.")
 
-    # ── Chart: Orders by Status ────────────────────────────────────────────
+    # ── Chart: SLA Status breakdown ────────────────────────────────────────
     with col_b:
-        prod_status_dist = (
-            pf.drop_duplicates(subset="SO")["Status"]
-            .replace("", "No Status").value_counts().reset_index()
-        )
-        prod_status_dist.columns = ["Status", "Count"]
-        prod_color_map = {
-            "Ready":                       "#2ecc71",
-            "Completed":                   "#27ae60",
-            "Pending Client Confirmation": "#f39c12",
-            "Claim":                       "#e74c3c",
-            "Cancel":                      "#95a5a6",
-            "No Status":                   "#bdc3c7",
+        sla_cat = pf["SLA Label"].replace("", "—")
+        sla_dist = sla_cat.value_counts().reset_index()
+        sla_dist.columns = ["SLA Status", "Count"]
+        sla_color_map = {
+            "Shipped":  "#27ae60",
+            "TODAY":    "#f39c12",
+            "—":        "#bdc3c7",
         }
-        fig_prod_status = px.pie(
-            prod_status_dist, names="Status", values="Count",
-            color="Status", color_discrete_map=prod_color_map,
-            title="Orders by Status",
+        # Colour overdue entries red, "X days left" green-ish
+        fig_sla = px.pie(
+            sla_dist, names="SLA Status", values="Count",
+            title="Items by SLA Status",
         )
-        st.plotly_chart(fig_prod_status, use_container_width=True)
+        st.plotly_chart(fig_sla, use_container_width=True)
 
     # ── Order Detail table ─────────────────────────────────────────────────
     st.subheader("Order Detail")
 
-    detail_cols = ["SO", "Customer Name", "Order Date", "Status", "Production Stage",
-                   "Description", "QTY", "SLA Label", "Item Note"]
+    detail_cols = ["SO", "Customer Name", "Order Date", "Order Status", "Order Class",
+                   "Item Sku", "Item Name", "Item QTY", "Picking Ship Date", "SLA Label",
+                   "Order Ship Date", "Item Note"]
     prod_detail = pf[[c for c in detail_cols if c in pf.columns]].copy()
 
     with st.expander("🔽 Column Filters", expanded=False):
         pfc1, pfc2, pfc3, pfc4 = st.columns(4)
         f_pd_so     = pfc1.text_input("SO", key="pd_f_so").strip()
         f_pd_cust   = pfc2.text_input("Customer Name", key="pd_f_cust").strip()
-        f_pd_status = pfc3.multiselect(
-            "Status",
-            sorted(prod_detail["Status"].replace("", pd.NA).dropna().unique().tolist()),
+        f_pd_sku    = pfc3.text_input("Item SKU / Name", key="pd_f_sku").strip()
+        f_pd_status = pfc4.multiselect(
+            "Order Status",
+            sorted(prod_detail["Order Status"].replace("", pd.NA).dropna().unique().tolist()),
             key="pd_f_status",
-        )
-        f_pd_stage  = pfc4.multiselect(
-            "Production Stage",
-            sorted(prod_detail["Production Stage"].replace("", pd.NA).dropna().unique().tolist()),
-            key="pd_f_stage",
         )
 
     if f_pd_so:
         prod_detail = prod_detail[prod_detail["SO"].str.contains(f_pd_so, case=False, na=False)]
     if f_pd_cust:
         prod_detail = prod_detail[prod_detail["Customer Name"].str.contains(f_pd_cust, case=False, na=False)]
+    if f_pd_sku:
+        mask = (
+            prod_detail["Item Sku"].str.contains(f_pd_sku, case=False, na=False) |
+            prod_detail["Item Name"].str.contains(f_pd_sku, case=False, na=False)
+        )
+        prod_detail = prod_detail[mask]
     if f_pd_status:
-        prod_detail = prod_detail[prod_detail["Status"].isin(f_pd_status)]
-    if f_pd_stage:
-        prod_detail = prod_detail[prod_detail["Production Stage"].isin(f_pd_stage)]
+        prod_detail = prod_detail[prod_detail["Order Status"].isin(f_pd_status)]
 
     st.caption(f"{len(prod_detail):,} item(s) across {prod_detail['SO'].nunique():,} order(s)")
-    st.dataframe(fmt_dates(prod_detail.rename(columns={"SLA Label": "SLA Timer"})),
-                 use_container_width=True)
+    st.dataframe(
+        fmt_dates(prod_detail.rename(columns={"SLA Label": "SLA Timer"})),
+        use_container_width=True,
+    )
 
     # ── Expandable rows ────────────────────────────────────────────────────
-    st.markdown("**Expand order to view items from Data sheet:**")
-    unique_prod_sos = prod_detail["SO"].unique()
-    for so in unique_prod_sos:
+    st.markdown("**Expand order to view all items:**")
+    for so in prod_detail["SO"].unique():
         so_rows = pf[pf["SO"] == so]
         cust    = so_rows["Customer Name"].iloc[0] if len(so_rows) > 0 else ""
-        status  = so_rows["Status"].iloc[0] if len(so_rows) > 0 else ""
+        status  = so_rows["Order Status"].iloc[0] if len(so_rows) > 0 else ""
         sla     = so_rows["SLA Label"].iloc[0] if len(so_rows) > 0 else "—"
         n_items = len(so_rows)
         label   = (
@@ -1176,10 +1191,78 @@ with tab_production:
             f"{n_items} item{'s' if n_items != 1 else ''}  |  SLA: {sla}"
         )
         with st.expander(label):
-            items = prod_items_df[prod_items_df["SO"] == so][
-                ["Item Sku", "Item Name", "Item QTY"]
-            ].rename(columns={"Item QTY": "QTY"}).reset_index(drop=True)
-            if items.empty:
-                st.write("No items found in Data per order.")
-            else:
-                st.dataframe(items, use_container_width=True)
+            items = so_rows[["Item Sku", "Item Name", "Item QTY", "Item Note"]]\
+                .rename(columns={"Item QTY": "QTY"})\
+                .reset_index(drop=True)
+            st.dataframe(items, use_container_width=True)
+
+    # ── Update Production Status ───────────────────────────────────────────
+    st.divider()
+    st.subheader("Update Production Status")
+    st.caption(
+        "Set the Status and Production Stage for each order below, "
+        "then click **Apply All Changes** to save to the Production Planning Sheet."
+    )
+
+    PROD_STATUS_OPTS = ["", "Cancel", "Claim", "Completed",
+                        "Pending Client Confirmation", "Ready"]
+    PROD_STAGE_OPTS  = ["", "Assembly", "Cutting", "Final Quality", "Painting",
+                        "Painting Prep", "Procurement", "Sponging", "Upholstery",
+                        "Veneer Final", "Veneer Internal", "Wood Work", "Completed"]
+
+    # Build SO → current values lookup from the 2026 sheet
+    status_lookup = prod_status_df.set_index("SO").to_dict("index") if not prod_status_df.empty else {}
+
+    unique_prod_sos = prod_detail["SO"].unique()
+
+    if len(unique_prod_sos) == 0:
+        st.info("No orders to update. Adjust your filters above.")
+    else:
+        # Column headers
+        h1, h2, h3, h4 = st.columns([2, 2, 2, 1])
+        h1.caption("Order")
+        h2.caption("Status")
+        h3.caption("Production Stage")
+        h4.caption("")
+        st.divider()
+
+        for so in unique_prod_sos:
+            so_rows   = pf[pf["SO"] == so]
+            cust      = so_rows["Customer Name"].iloc[0] if len(so_rows) > 0 else ""
+            cur       = status_lookup.get(so, {})
+            cur_status = cur.get("Status", "")
+            cur_stage  = cur.get("Production Stage", "")
+
+            s_idx = PROD_STATUS_OPTS.index(cur_status) if cur_status in PROD_STATUS_OPTS else 0
+            g_idx = PROD_STAGE_OPTS.index(cur_stage)   if cur_stage  in PROD_STAGE_OPTS  else 0
+
+            c1, c2, c3, _ = st.columns([2, 2, 2, 1])
+            c1.markdown(f"**{so}**  {cust}")
+            c2.selectbox("Status", PROD_STATUS_OPTS, index=s_idx,
+                         key=f"ps_status_{so}", label_visibility="collapsed")
+            c3.selectbox("Production Stage", PROD_STAGE_OPTS, index=g_idx,
+                         key=f"ps_stage_{so}", label_visibility="collapsed")
+
+        st.divider()
+        if st.button("💾 Apply All Changes", type="primary", key="prod_apply_all"):
+            so_updates = {
+                so: {
+                    "Status":           st.session_state.get(f"ps_status_{so}", ""),
+                    "Production Stage": st.session_state.get(f"ps_stage_{so}", ""),
+                }
+                for so in unique_prod_sos
+            }
+            with st.spinner("Writing to Production Planning Sheet…"):
+                try:
+                    updated = write_production_status(PROD_SHEET, so_updates)
+                    if updated:
+                        st.success(f"Updated {len(updated)} order(s). Refreshing…")
+                    else:
+                        st.warning(
+                            "No matching orders found in the 2026 worksheet. "
+                            "Only orders that already appear in that sheet can be updated."
+                        )
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Write failed: {e}")
