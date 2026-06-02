@@ -1126,9 +1126,10 @@ with tab_tracker:
                f"At-risk threshold: {at_risk_d} days")
 
     display_cols = ["SO", "Customer Name", "Order Date", "Item Sku", "Item Name",
-                    "Item QTY", "Order Status", "Status", "Production Stage",
-                    "SLA Status", "SLA Countdown", "_deadline_str", "Item Note"]
+                    "Item Note", "Item QTY", "Order Status", "Status", "Production Stage",
+                    "SLA Status", "SLA Countdown", "_deadline_str"]
     table_view = view[[c for c in display_cols if c in view.columns]].rename(columns={
+        "Item Name":     "Item Description",
         "_deadline_str": "SLA Deadline",
     }).copy()
 
