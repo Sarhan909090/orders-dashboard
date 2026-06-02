@@ -221,6 +221,59 @@ def write_production_status(sheet_url_or_name: str, so_updates: dict) -> list:
     return updated
 
 
+def setup_2026_formula(sheet_url_or_name: str) -> int:
+    """Write live FILTER / VLOOKUP formulas into '2026' below the last existing row.
+
+    Finds the last row in column A that has a non-empty SO, then writes formula
+    cells at anchor = last_row + 2 (one blank separator row in between).
+
+    FILTER formulas pull every column from 'Copy of Data per order' that isn't
+    already in '2026' rows 2–last_row.
+    VLOOKUP formulas in cols D and E pull Status / Production Stage from the
+    'Order Status' tab so tracker saves appear automatically in '2026'.
+
+    Returns the anchor row number used.
+    """
+    sheet = _open_sheet(sheet_url_or_name, _WRITE_SCOPES)
+    ws    = sheet.worksheet("2026")
+
+    # Find last row with a non-empty SO in column A
+    col_a = ws.col_values(1)          # 1-based; index 0 = header "f"
+    last_so_row = 1                    # at minimum, header exists
+    for i, val in enumerate(col_a[1:], start=2):   # skip header (row 1)
+        if val.strip():
+            last_so_row = i
+    anchor = last_so_row + 2           # one blank separator
+
+    r = anchor                         # shorthand
+    # FILTER condition: non-empty SO in source AND not already in existing 2026 rows
+    cond = (
+        f"('Copy of Data per order'!A2:A<>\"\")"
+        f"*NOT(COUNTIF('2026'!$A$2:$A${last_so_row},'Copy of Data per order'!A2:A))"
+    )
+
+    formulas = {
+        f"A{r}": f"=FILTER('Copy of Data per order'!A2:A,{cond})",
+        f"B{r}": f"=FILTER(TEXT('Copy of Data per order'!B2:B,\"D-MMM\"),{cond})",
+        f"C{r}": f"=FILTER('Copy of Data per order'!C2:C,{cond})",
+        # D = Status (VLOOKUP from Order Status tab)
+        f"D{r}": f"=ARRAYFORMULA(IF(A{r}:A=\"\",\"\",IFERROR(VLOOKUP(A{r}:A,'Order Status'!$A:$B,2,0),\"\")))",
+        # E = Production Stage (VLOOKUP from Order Status tab)
+        f"E{r}": f"=ARRAYFORMULA(IF(A{r}:A=\"\",\"\",IFERROR(VLOOKUP(A{r}:A,'Order Status'!$A:$C,3,0),\"\")))",
+        f"F{r}": f"=FILTER('Copy of Data per order'!E2:E,{cond})",   # Order Status
+        f"G{r}": f"=FILTER('Copy of Data per order'!F2:F,{cond})",   # Item Sku
+        f"H{r}": f"=FILTER('Copy of Data per order'!G2:G,{cond})",   # Item Name → Descreption
+        f"I{r}": f"=FILTER('Copy of Data per order'!H2:H,{cond})",   # QTY
+        f"J{r}": f"=FILTER('Copy of Data per order'!I2:I,{cond})",   # Item Note
+        f"R{r}": f"=FILTER('Copy of Data per order'!K2:K,{cond})",   # Order Class
+    }
+
+    for cell, formula in formulas.items():
+        ws.update(cell, [[formula]], value_input_option="USER_ENTERED")
+
+    return anchor
+
+
 _TRACKER_STATUS_TAB   = "Order Status"
 _TRACKER_STATUS_HEADS = ["SO", "Status", "Production Stage", "Updated At"]
 
