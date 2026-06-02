@@ -157,6 +157,66 @@ def write_dot_tags(sheet_url_or_name: str, so_tag_map: dict, worksheet_name: str
     return [so for so in so_tag_map if so in so_row_map]
 
 
+def write_production_status(sheet_url_or_name: str, so_updates: dict) -> list:
+    """Write Status and Production Stage back to the '2026' worksheet.
+
+    so_updates: {SO: {"Status": "...", "Production Stage": "..."}}
+    Updates ALL rows with a matching SO (since one SO can span multiple item rows).
+    Returns list of SOs that were found and updated.
+    """
+    write_scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds  = _get_creds(write_scopes)
+    client = gspread.authorize(creds)
+    sheet  = client.open_by_url(sheet_url_or_name) if sheet_url_or_name.startswith("http") \
+             else client.open(sheet_url_or_name)
+
+    ws   = sheet.worksheet("2026")
+    rows = ws.get_all_values()
+    if not rows:
+        return []
+
+    raw_headers = [h.strip() for h in rows[0]]
+    try:
+        so_col = raw_headers.index("f")
+    except ValueError:
+        raise ValueError("SO column ('f') not found in 2026 worksheet")
+
+    status_col = raw_headers.index("Statues")     if "Statues"     in raw_headers else None
+    stage_col  = raw_headers.index("Status Manu") if "Status Manu" in raw_headers else None
+
+    # Build SO → list of 1-based row numbers (multiple item rows per SO)
+    so_row_map: dict[str, list[int]] = {}
+    for i, row in enumerate(rows[1:]):
+        so = row[so_col].strip() if so_col < len(row) else ""
+        if so:
+            so_row_map.setdefault(so, []).append(i + 2)
+
+    updates = []
+    updated = []
+    for so, changes in so_updates.items():
+        if so not in so_row_map:
+            continue
+        for row_num in so_row_map[so]:
+            if "Status" in changes and status_col is not None:
+                updates.append({
+                    "range":  gspread.utils.rowcol_to_a1(row_num, status_col + 1),
+                    "values": [[changes["Status"]]],
+                })
+            if "Production Stage" in changes and stage_col is not None:
+                updates.append({
+                    "range":  gspread.utils.rowcol_to_a1(row_num, stage_col + 1),
+                    "values": [[changes["Production Stage"]]],
+                })
+        updated.append(so)
+
+    if updates:
+        ws.batch_update(updates)
+    return updated
+
+
 _TRACKER_STATUS_TAB   = "Order Status"
 _TRACKER_STATUS_HEADS = ["SO", "Status", "Production Stage", "Updated At"]
 

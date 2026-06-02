@@ -4,7 +4,8 @@ import plotly.express as px
 import numpy as np
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
                      load_tracker_orders, ensure_order_status_tab,
-                     load_order_statuses, upsert_order_status)
+                     load_order_statuses, upsert_order_status,
+                     write_production_status)
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -1181,12 +1182,26 @@ with tab_tracker:
                          type="primary", key="tr_save_all"):
                 with st.spinner("Saving…"):
                     errors = []
+                    # Build update map for batch write to 2026
+                    so_updates = {
+                        r["SO"]: {
+                            "Status":           r["Status"],
+                            "Production Stage": r["Production Stage"],
+                        }
+                        for _, r in changed_sos.iterrows()
+                    }
+                    # Write 1: update 2026 sheet (Statues + Status Manu columns)
+                    try:
+                        write_production_status(PROD_SHEET, so_updates)
+                    except Exception as e:
+                        errors.append(f"2026 sheet write failed: {e}")
+                    # Write 2: upsert Order Status tab (tracker's read-back store)
                     for _, r in changed_sos.iterrows():
                         try:
                             upsert_order_status(PROD_SHEET, r["SO"],
                                                 r["Status"], r["Production Stage"])
                         except Exception as e:
-                            errors.append(f"{r['SO']}: {e}")
+                            errors.append(f"{r['SO']} (status tab): {e}")
                 if errors:
                     st.error("Some saves failed:\n" + "\n".join(errors))
                 else:
