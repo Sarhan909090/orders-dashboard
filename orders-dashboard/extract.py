@@ -373,6 +373,53 @@ def upsert_order_status(sheet_url_or_name: str,
     ws.append_row(new_row)   # SO not found → add new row
 
 
+def bulk_upsert_order_status(sheet_url_or_name: str, updates: list) -> int:
+    """Insert or update many rows in 'Order Status' in as few API calls as possible.
+
+    updates: list of dicts {"SO", "Status", "Production Stage"}.
+    One read of the tab, then a single batch_update for existing SOs and a single
+    append_rows for new SOs. Returns the number of SOs written.
+    """
+    import datetime
+    sheet = _open_sheet(sheet_url_or_name, _WRITE_SCOPES)
+    ws    = sheet.worksheet(_TRACKER_STATUS_TAB)
+    rows  = ws.get_all_values()
+
+    updated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    headers = rows[0] if rows else _TRACKER_STATUS_HEADS
+    so_col  = headers.index("SO") if "SO" in headers else 0
+
+    # Map existing SO → 1-based row number
+    so_row_map = {}
+    for i, row in enumerate(rows[1:], start=2):
+        if so_col < len(row) and row[so_col].strip():
+            so_row_map[row[so_col].strip()] = i
+
+    batch   = []
+    appends = []
+    seen    = set()
+    for u in updates:
+        so = str(u["SO"]).strip()
+        if not so or so in seen:
+            continue
+        seen.add(so)
+        new_row = [so, u.get("Status", ""), u.get("Production Stage", ""), updated_at]
+        if so in so_row_map:
+            r = so_row_map[so]
+            col_end = gspread.utils.rowcol_to_a1(r, len(_TRACKER_STATUS_HEADS))
+            batch.append({"range": f"A{r}:{col_end}", "values": [new_row]})
+        else:
+            appends.append(new_row)
+
+    if batch:
+        ws.batch_update(batch)
+    if appends:
+        ws.append_rows(appends, value_input_option="USER_ENTERED")
+
+    return len(seen)
+
+
 if __name__ == "__main__":
     SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
     df = load_orders(SHEET)

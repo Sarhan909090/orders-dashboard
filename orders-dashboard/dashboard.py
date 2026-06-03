@@ -5,7 +5,7 @@ import numpy as np
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
                      load_tracker_orders, ensure_order_status_tab,
                      load_order_statuses, upsert_order_status,
-                     write_production_status)
+                     write_production_status, bulk_upsert_order_status)
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -1369,3 +1369,33 @@ with tab_tracker:
         )
         st.warning(f"⚠️ {len(audit):,} delivered SO(s) not yet marked Completed.")
         st.dataframe(fmt_dates(audit), use_container_width=True, hide_index=True)
+
+        st.caption("One-time cleanup: mark every delivered SO above as Completed so the "
+                   "tracker starts clean. Going forward, the SLA auto-freezes on Delivery Date.")
+        if st.button(f"✅ Mark all {len(audit):,} as Completed (one-time)",
+                     type="primary", key="tr_mark_delivered"):
+            sos = audit["SO"].tolist()
+            with st.spinner(f"Marking {len(sos):,} order(s) as Completed…"):
+                errors = []
+                so_updates = {so: {"Status": "Completed", "Production Stage": "Completed"}
+                              for so in sos}
+                # Write 1: 2026 sheet (Statues + Status Manu)
+                try:
+                    write_production_status(PROD_SHEET, so_updates)
+                except Exception as e:
+                    errors.append(f"2026 sheet write failed: {e}")
+                # Write 2: Order Status tab (bulk, few API calls)
+                try:
+                    bulk_upsert_order_status(
+                        PROD_SHEET,
+                        [{"SO": so, "Status": "Completed", "Production Stage": "Completed"}
+                         for so in sos],
+                    )
+                except Exception as e:
+                    errors.append(f"Order Status write failed: {e}")
+            if errors:
+                st.error("Some writes failed:\n" + "\n".join(errors))
+            else:
+                st.success(f"Marked {len(sos):,} order(s) as Completed. Refreshing…")
+                st.cache_data.clear()
+                st.rerun()
