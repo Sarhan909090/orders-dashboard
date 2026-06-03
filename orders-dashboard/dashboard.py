@@ -38,6 +38,11 @@ def _cfg_bool(cfg, key, default=True):
     return str(cfg.get(key, "1" if default else "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _cfg_clamp(cfg, key, default, lo, hi):
+    """Config int clamped into [lo, hi] — keeps number_input from raising on bad data."""
+    return min(max(_cfg_int(cfg, key, default), lo), hi)
+
+
 def build_sla_rules(cfg):
     """Build the SLA rule structure from a Config dict (with safe fallbacks)."""
     return {
@@ -1155,10 +1160,13 @@ with tab_tracker:
     today_ts = pd.Timestamp.today().normalize()
     order_dt = (tdf["op_order_date"].fillna(tdf["Order Date"])
                 if "Order Date" in tdf.columns else tdf["op_order_date"])
-    tdf["_deadline"] = [
+    _deadlines = [
         sla_deadline(od, s, p, f, sla_rules)
         for od, s, p, f in zip(order_dt, tdf["op_status"], tdf["op_plan"], tdf["op_ft"])
     ]
+    # Force datetime64 dtype (a plain list of all-NaT/empty would become float64,
+    # which then breaks the .dt accessor downstream)
+    tdf["_deadline"] = pd.to_datetime(pd.Series(_deadlines, index=tdf.index))
 
     # Completion signals:
     #   (a) manually marked — tracker Status OR Production Stage = "Completed"
@@ -1491,17 +1499,17 @@ with tab_admin:
         st.caption("Deadline = Order Date + offset. Waterfall: DOT → Plan month → FT CODE.")
         with st.form("admin_sla"):
             r1 = st.columns(4)
-            v_go    = r1[0].number_input("DOT-GO (days)",   1, 365, _cfg_int(cfg, "dot_go_days", 7))
-            v_lite  = r1[1].number_input("DOT-LITE (days)", 1, 365, _cfg_int(cfg, "dot_lite_days", 7))
-            v_v21   = r1[2].number_input("DOT-V2.1 (weeks)",1, 52,  _cfg_int(cfg, "dot_v21_weeks", 7))
-            v_plan  = r1[3].number_input("Plan month (weeks)",1,52, _cfg_int(cfg, "plan_weeks", 7))
+            v_go    = r1[0].number_input("DOT-GO (days)",   1, 365, _cfg_clamp(cfg, "dot_go_days", 7, 1, 365))
+            v_lite  = r1[1].number_input("DOT-LITE (days)", 1, 365, _cfg_clamp(cfg, "dot_lite_days", 7, 1, 365))
+            v_v21   = r1[2].number_input("DOT-V2.1 (weeks)",1, 52,  _cfg_clamp(cfg, "dot_v21_weeks", 7, 1, 52))
+            v_plan  = r1[3].number_input("Plan month (weeks)",1,52, _cfg_clamp(cfg, "plan_weeks", 7, 1, 52))
             r2 = st.columns(5)
-            v_34    = r2[0].number_input("FT-34 (weeks)", 1, 52, _cfg_int(cfg, "ft_34_weeks", 3))
-            v_45    = r2[1].number_input("FT-45 (weeks)", 1, 52, _cfg_int(cfg, "ft_45_weeks", 4))
-            v_56    = r2[2].number_input("FT-56 (weeks)", 1, 52, _cfg_int(cfg, "ft_56_weeks", 5))
-            v_67    = r2[3].number_input("FT-67 (weeks)", 1, 52, _cfg_int(cfg, "ft_67_weeks", 6))
-            v_lifo  = r2[4].number_input("LIFO14 (work days)", 1, 365, _cfg_int(cfg, "lifo14_workdays", 14))
-            v_risk  = st.number_input("At-risk threshold (days remaining)", 0, 60, _cfg_int(cfg, "sla_at_risk_days", 3))
+            v_34    = r2[0].number_input("FT-34 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_34_weeks", 3, 1, 52))
+            v_45    = r2[1].number_input("FT-45 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_45_weeks", 4, 1, 52))
+            v_56    = r2[2].number_input("FT-56 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_56_weeks", 5, 1, 52))
+            v_67    = r2[3].number_input("FT-67 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_67_weeks", 6, 1, 52))
+            v_lifo  = r2[4].number_input("LIFO14 (work days)", 1, 365, _cfg_clamp(cfg, "lifo14_workdays", 14, 1, 365))
+            v_risk  = st.number_input("At-risk threshold (days remaining)", 0, 60, _cfg_clamp(cfg, "sla_at_risk_days", 3, 0, 60))
             if st.form_submit_button("💾 Save SLA rules", type="primary"):
                 save_config(PROD_SHEET, {
                     "dot_go_days": v_go, "dot_lite_days": v_lite, "dot_v21_weeks": v_v21,
