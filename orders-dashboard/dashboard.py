@@ -5,7 +5,7 @@ import numpy as np
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
                      load_tracker_orders, ensure_order_status_tab,
                      load_order_statuses, upsert_order_status,
-                     write_production_status, setup_2026_formula)
+                     write_production_status)
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -1214,25 +1214,3 @@ with tab_tracker:
                     st.success(f"Saved {len(changed_sos):,} order(s). Refreshing…")
                     st.cache_data.clear()
                     st.rerun()
-
-    # ── One-time sheet setup ───────────────────────────────────────────────
-    with st.expander("⚙️ Sheet Setup", expanded=False):
-        st.caption(
-            "Adds live FILTER + VLOOKUP formulas to the **2026** sheet below the last "
-            "existing row. New orders from *Copy of Data per order* will appear there "
-            "automatically. Status and Production Stage are VLOOKUP-ed from the "
-            "*Order Status* tab. **Run once** — re-running moves the anchor to the "
-            "new last row."
-        )
-        if st.button("🔗 Set up auto-sync formula in 2026", key="setup_formula"):
-            with st.spinner("Writing formulas to 2026…"):
-                try:
-                    anchor = setup_2026_formula(PROD_SHEET)
-                    st.success(
-                        f"Done — formulas written at row {anchor}. "
-                        "New orders will appear in '2026' automatically."
-                    )
-                    st.cache_data.clear()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Setup failed: {e}")
