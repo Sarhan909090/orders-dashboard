@@ -345,7 +345,7 @@ cfg       = get_config()
 sla_rules = build_sla_rules(cfg)
 
 tab_orders, tab_kpi, tab_dot, tab_tracker, tab_admin = st.tabs(
-    ["Orders", "Delivery KPI", "DOT Orders", "Orders Tracker", "⚙️ Admin"]
+    ["Orders", "Delivery KPI", "DOT Orders", "Production Tracker", "⚙️ Admin"]
 )
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1081,7 +1081,7 @@ with tab_dot:
 # TAB 4 — ORDERS TRACKER
 # ════════════════════════════════════════════════════════════════════════════
 with tab_tracker:
-    st.subheader("Orders Tracker")
+    st.subheader("Production Tracker")
 
     # ── Load data ──────────────────────────────────────────────────────────
     tracker_orders  = get_tracker_orders(
