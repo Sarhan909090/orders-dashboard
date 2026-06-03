@@ -420,6 +420,75 @@ def bulk_upsert_order_status(sheet_url_or_name: str, updates: list) -> int:
     return len(seen)
 
 
+_CONFIG_TAB = "Config"
+_CONFIG_DEFAULTS = {
+    # SLA rule values
+    "sla_at_risk_days":  "3",
+    "dot_go_days":       "7",
+    "dot_lite_days":     "7",
+    "dot_v21_weeks":     "7",
+    "plan_weeks":        "7",
+    "ft_34_weeks":       "3",
+    "ft_45_weeks":       "4",
+    "ft_56_weeks":       "5",
+    "ft_67_weeks":       "6",
+    "lifo14_workdays":   "14",
+    # feature toggles (1 = on, 0 = off)
+    "filter_2026_only":      "1",
+    "exclude_transportation":"1",
+    "exclude_cancelled":     "1",
+    "freeze_on_delivery":    "1",
+}
+
+
+def ensure_config_tab(sheet_url_or_name: str) -> None:
+    """Create the 'Config' worksheet with default key/value rows if it doesn't exist."""
+    sheet = _open_sheet(sheet_url_or_name, _WRITE_SCOPES)
+    if _CONFIG_TAB not in [ws.title for ws in sheet.worksheets()]:
+        ws = sheet.add_worksheet(_CONFIG_TAB, rows=100, cols=2)
+        ws.append_row(["Key", "Value"])
+        ws.append_rows([[k, v] for k, v in _CONFIG_DEFAULTS.items()],
+                       value_input_option="USER_ENTERED")
+
+
+def load_config(sheet_url_or_name: str) -> dict:
+    """Read the 'Config' tab → {key: value}. Missing keys fall back to defaults."""
+    cfg = dict(_CONFIG_DEFAULTS)
+    sheet = _open_sheet(sheet_url_or_name, SCOPES)
+    try:
+        rows = sheet.worksheet(_CONFIG_TAB).get_all_values()
+    except gspread.exceptions.WorksheetNotFound:
+        return cfg
+    for r in rows[1:]:
+        if len(r) >= 2 and r[0].strip():
+            cfg[r[0].strip()] = r[1].strip()
+    return cfg
+
+
+def save_config(sheet_url_or_name: str, updates: dict) -> int:
+    """Upsert key/value pairs into the 'Config' tab. Returns number written."""
+    sheet = _open_sheet(sheet_url_or_name, _WRITE_SCOPES)
+    try:
+        ws = sheet.worksheet(_CONFIG_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sheet.add_worksheet(_CONFIG_TAB, rows=100, cols=2)
+        ws.append_row(["Key", "Value"])
+    rows = ws.get_all_values()
+    key_row = {r[0].strip(): i for i, r in enumerate(rows[1:], start=2)
+               if r and r[0].strip()}
+    batch, appends = [], []
+    for k, v in updates.items():
+        if k in key_row:
+            batch.append({"range": f"B{key_row[k]}", "values": [[str(v)]]})
+        else:
+            appends.append([k, str(v)])
+    if batch:
+        ws.batch_update(batch)
+    if appends:
+        ws.append_rows(appends, value_input_option="USER_ENTERED")
+    return len(updates)
+
+
 if __name__ == "__main__":
     SHEET = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
     df = load_orders(SHEET)

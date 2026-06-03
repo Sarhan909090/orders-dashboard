@@ -1,4 +1,4 @@
-# redeploy marker: force full environment rebuild + process restart
+# redeploy marker: admin panel + config tab (force env rebuild / module reload)
 altair==6.1.0
 anyio==4.13.0
 attrs==26.1.0

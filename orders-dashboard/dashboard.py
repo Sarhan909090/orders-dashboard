@@ -6,7 +6,11 @@ import numpy as np
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
                      load_tracker_orders, ensure_order_status_tab,
                      load_order_statuses, upsert_order_status,
-                     write_production_status, bulk_upsert_order_status)
+                     write_production_status, bulk_upsert_order_status,
+                     setup_2026_formula, ensure_config_tab, load_config, save_config)
+
+# ── Admin access — change this password (or set st.secrets["admin_password"]) ──
+ADMIN_PASSWORD = "deci2026"
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 col_title, col_refresh = st.columns([9, 1])
@@ -18,14 +22,40 @@ if col_refresh.button("🔄 Refresh", help="Reload all data from Google Sheet"):
 SHEET      = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
 PROD_SHEET = "https://docs.google.com/spreadsheets/d/1zpdNjDFPRi7RCvMImn3-soW0P3dYubS1d76FwsjfL28/edit"
 
-# ── SLA RULES — deadline = Order Date + offset, by waterfall DOT → Plan → FT CODE
-SLA_AT_RISK_DAYS = 3                  # days remaining when colour turns amber
-SLA_TERMINAL     = ["Completed"]      # tracker editable Status that stops the clock
-DOT_RULES  = {"DOT-GO": ("days", 7), "DOT-LITE": ("days", 7), "DOT-V2.1": ("weeks", 7)}
-PLAN_WEEKS = 7                        # any month Plan (not Online/Fast Track) → 7 weeks
-FT_RULES   = {"FT-34": ("weeks", 3), "FT-45": ("weeks", 4), "FT-56": ("weeks", 5),
-              "FT-67": ("weeks", 6), "LIFO14": ("workdays", 14)}
-# ─────────────────────────────────────────────────────────────────────────────
+# ── SLA RULES — deadline = Order Date + offset, by waterfall DOT → Plan → FT CODE.
+# These are DEFAULTS; live values come from the Config tab (editable in the Admin panel).
+SLA_TERMINAL = ["Completed"]          # tracker editable Status that stops the clock
+
+
+def _cfg_int(cfg, key, default):
+    try:
+        return int(float(cfg.get(key, default)))
+    except Exception:
+        return default
+
+
+def _cfg_bool(cfg, key, default=True):
+    return str(cfg.get(key, "1" if default else "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def build_sla_rules(cfg):
+    """Build the SLA rule structure from a Config dict (with safe fallbacks)."""
+    return {
+        "at_risk":    _cfg_int(cfg, "sla_at_risk_days", 3),
+        "plan_weeks": _cfg_int(cfg, "plan_weeks", 7),
+        "dot": {
+            "DOT-GO":   ("days",  _cfg_int(cfg, "dot_go_days", 7)),
+            "DOT-LITE": ("days",  _cfg_int(cfg, "dot_lite_days", 7)),
+            "DOT-V2.1": ("weeks", _cfg_int(cfg, "dot_v21_weeks", 7)),
+        },
+        "ft": {
+            "FT-34":  ("weeks",    _cfg_int(cfg, "ft_34_weeks", 3)),
+            "FT-45":  ("weeks",    _cfg_int(cfg, "ft_45_weeks", 4)),
+            "FT-56":  ("weeks",    _cfg_int(cfg, "ft_56_weeks", 5)),
+            "FT-67":  ("weeks",    _cfg_int(cfg, "ft_67_weeks", 6)),
+            "LIFO14": ("workdays", _cfg_int(cfg, "lifo14_workdays", 14)),
+        },
+    }
 
 
 def week_start(date):
@@ -45,29 +75,35 @@ def add_working_days(start, n, off_weekday=4):
     return d
 
 
-def sla_deadline(order_date, status, plan, ft_code):
+def _apply_offset(order_date, unit, n):
+    if unit == "days":
+        return order_date + pd.Timedelta(days=n)
+    if unit == "weeks":
+        return order_date + pd.Timedelta(weeks=n)
+    if unit == "workdays":
+        return add_working_days(order_date, n)
+    return pd.NaT
+
+
+def sla_deadline(order_date, status, plan, ft_code, rules):
     """Compute the SLA deadline via waterfall: DOT → Plan month → FT CODE.
-    Returns a Timestamp or NaT when no rule matches."""
+    'rules' comes from build_sla_rules(cfg). Returns a Timestamp or NaT."""
     if pd.isna(order_date):
         return pd.NaT
     s = str(status).strip().upper()
     p = str(plan).strip()
     f = str(ft_code).strip().upper()
     # 1. DOT type
-    if s in ("DOT-GO", "DOT-LITE"):
-        return order_date + pd.Timedelta(days=7)
-    if s == "DOT-V2.1":
-        return order_date + pd.Timedelta(weeks=7)
+    if s in rules["dot"]:
+        unit, n = rules["dot"][s]
+        return _apply_offset(order_date, unit, n)
     # 2. Plan month (any non-blank value that isn't Online/Fast Track)
     if p and p.lower() not in ("", "nan", "online/fast track"):
-        return order_date + pd.Timedelta(weeks=PLAN_WEEKS)
+        return order_date + pd.Timedelta(weeks=rules["plan_weeks"])
     # 3. FT CODE
-    if f in FT_RULES:
-        unit, n = FT_RULES[f]
-        if unit == "weeks":
-            return order_date + pd.Timedelta(weeks=n)
-        if unit == "workdays":
-            return add_working_days(order_date, n)
+    if f in rules["ft"]:
+        unit, n = rules["ft"][f]
+        return _apply_offset(order_date, unit, n)
     return pd.NaT
 
 
@@ -273,12 +309,12 @@ def get_dot_items() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
-def get_tracker_orders() -> pd.DataFrame:
-    """Load 'Copy of Data per order' for the tracker — 2026 orders only, no Transportation lines."""
+def get_tracker_orders(year_2026_only: bool = True, exclude_transport: bool = True) -> pd.DataFrame:
+    """Load 'Copy of Data per order' for the tracker. Toggles are cache-keyed."""
     df = load_tracker_orders(PROD_SHEET)
-    if "Order Date" in df.columns:
+    if year_2026_only and "Order Date" in df.columns:
         df = df[df["Order Date"].dt.year == 2026]
-    if "Item Sku" in df.columns:
+    if exclude_transport and "Item Sku" in df.columns:
         df = df[~df["Item Sku"].str.strip().str.lower().eq("transportation")]
     return df.reset_index(drop=True)
 
@@ -289,17 +325,27 @@ def get_order_statuses() -> pd.DataFrame:
     return load_order_statuses(PROD_SHEET)
 
 
+@st.cache_data(ttl=60)
+def get_config() -> dict:
+    """Load admin config (SLA rules + toggles) from the Config tab."""
+    return load_config(PROD_SHEET)
+
+
 df = get_data()
 dot_items_df = get_dot_items()
 
-# Ensure the Order Status tab exists in the Production Planning Sheet
-try:
-    ensure_order_status_tab(PROD_SHEET)
-except Exception:
-    pass   # non-fatal: if it already exists or there's a transient error, continue
+# Ensure the Order Status + Config tabs exist in the Production Planning Sheet
+for _ensure in (ensure_order_status_tab, ensure_config_tab):
+    try:
+        _ensure(PROD_SHEET)
+    except Exception:
+        pass   # non-fatal
 
-tab_orders, tab_kpi, tab_dot, tab_tracker = st.tabs(
-    ["Orders", "Delivery KPI", "DOT Orders", "Orders Tracker"]
+cfg       = get_config()
+sla_rules = build_sla_rules(cfg)
+
+tab_orders, tab_kpi, tab_dot, tab_tracker, tab_admin = st.tabs(
+    ["Orders", "Delivery KPI", "DOT Orders", "Orders Tracker", "⚙️ Admin"]
 )
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1038,7 +1084,10 @@ with tab_tracker:
     st.subheader("Orders Tracker")
 
     # ── Load data ──────────────────────────────────────────────────────────
-    tracker_orders  = get_tracker_orders()
+    tracker_orders  = get_tracker_orders(
+        _cfg_bool(cfg, "filter_2026_only", True),
+        _cfg_bool(cfg, "exclude_transportation", True),
+    )
     tracker_statuses = get_order_statuses()
 
     if tracker_orders.empty:
@@ -1097,27 +1146,29 @@ with tab_tracker:
     for c in ["op_status", "op_plan", "op_cs", "op_ft"]:
         tdf[c] = tdf[c].fillna("")
 
-    # Exclude cancelled orders (per Orders Plan Status / CS Updated Date)
-    cancel_mask = tdf.apply(lambda r: _is_canceled(r["op_status"], r["op_cs"]), axis=1)
-    tdf = tdf[~cancel_mask].reset_index(drop=True)
+    # Exclude cancelled orders (per Orders Plan Status / CS Updated Date) — toggle
+    if _cfg_bool(cfg, "exclude_cancelled", True):
+        cancel_mask = tdf.apply(lambda r: _is_canceled(r["op_status"], r["op_cs"]), axis=1)
+        tdf = tdf[~cancel_mask].reset_index(drop=True)
 
     # ── SLA computation (rule-based) ─────────────────────────────────────────
     today_ts = pd.Timestamp.today().normalize()
     order_dt = (tdf["op_order_date"].fillna(tdf["Order Date"])
                 if "Order Date" in tdf.columns else tdf["op_order_date"])
     tdf["_deadline"] = [
-        sla_deadline(od, s, p, f)
+        sla_deadline(od, s, p, f, sla_rules)
         for od, s, p, f in zip(order_dt, tdf["op_status"], tdf["op_plan"], tdf["op_ft"])
     ]
 
     # Completion signals:
     #   (a) manually marked — tracker Status OR Production Stage = "Completed"
-    #   (b) delivered       — a Delivery Date exists in "Orders Plan "
+    #   (b) delivered       — a Delivery Date exists in "Orders Plan " (toggle)
     tdf["_marked_completed"] = (
         tdf["Status"].isin(SLA_TERMINAL) | tdf["Production Stage"].isin(SLA_TERMINAL)
     )
     tdf["op_delivery"] = pd.to_datetime(tdf["op_delivery"], errors="coerce").dt.normalize()
-    tdf["_has_delivery"] = tdf["op_delivery"].notna()
+    _freeze_delivery = _cfg_bool(cfg, "freeze_on_delivery", True)
+    tdf["_has_delivery"] = tdf["op_delivery"].notna() & _freeze_delivery
     tdf["_completed"] = tdf["_marked_completed"] | tdf["_has_delivery"]
 
     # Day it was manually marked (Order Status tab "Updated At"); fallback today.
@@ -1132,15 +1183,18 @@ with tab_tracker:
     ref_date = ref_date.where(~tdf["_has_delivery"], tdf["op_delivery"])
     tdf["_days_left"] = (tdf["_deadline"] - ref_date).dt.days
 
+    _plan_weeks = sla_rules["plan_weeks"]
+    _at_risk    = sla_rules["at_risk"]
+
     def _sla_basis(row):
         s = str(row["op_status"]).strip().upper()
         p = str(row["op_plan"]).strip()
         f = str(row["op_ft"]).strip().upper()
-        if s in DOT_RULES:
+        if s in sla_rules["dot"]:
             return s
         if p and p.lower() not in ("", "nan", "online/fast track"):
-            return "Plan · 7w"
-        if f in FT_RULES:
+            return f"Plan · {_plan_weeks}w"
+        if f in sla_rules["ft"]:
             return f
         return "—"
     tdf["SLA Basis"] = tdf.apply(_sla_basis, axis=1)
@@ -1152,7 +1206,7 @@ with tab_tracker:
             return "No SLA"
         if row["_days_left"] < 0:
             return "Breached"
-        if row["_days_left"] <= SLA_AT_RISK_DAYS:
+        if row["_days_left"] <= _at_risk:
             return "At Risk"
         return "On Track"
     tdf["SLA Status"] = tdf.apply(_sla_status, axis=1)
@@ -1238,8 +1292,7 @@ with tab_tracker:
     # ── Read-only summary table ─────────────────────────────────────────────
     st.subheader("Order List")
     st.caption(f"{len(view):,} item row(s) across {n_total:,} order(s)  ·  "
-               f"Deadline by rule: DOT-GO/LITE 7d · DOT-V2.1 7w · Plan month 7w · "
-               f"FT-34/45/56 3/4/5w · LIFO14 14 working days · At-risk ≤ {SLA_AT_RISK_DAYS}d")
+               f"Rules editable in ⚙️ Admin · At-risk ≤ {sla_rules['at_risk']}d")
 
     display_cols = ["SO", "Customer Name", "Order Date", "Item Sku", "Item Name",
                     "Item Note", "Item QTY", "Order Status", "Status", "Production Stage",
@@ -1400,3 +1453,116 @@ with tab_tracker:
                 st.success(f"Marked {len(sos):,} order(s) as Completed. Refreshing…")
                 st.cache_data.clear()
                 st.rerun()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 5 — ADMIN  (password-gated)
+# ════════════════════════════════════════════════════════════════════════════
+with tab_admin:
+    st.subheader("⚙️ Admin Panel")
+
+    def _admin_pw():
+        try:
+            if "admin_password" in st.secrets:
+                return str(st.secrets["admin_password"])
+        except Exception:
+            pass
+        return ADMIN_PASSWORD
+
+    if not st.session_state.get("admin_ok", False):
+        st.info("This panel is restricted. Enter the admin password to continue.")
+        pw = st.text_input("Admin password", type="password", key="admin_pw_input")
+        c_login, _ = st.columns([1, 4])
+        if c_login.button("🔓 Unlock", key="admin_unlock"):
+            if pw == _admin_pw():
+                st.session_state["admin_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    else:
+        top1, top2 = st.columns([4, 1])
+        top1.success("Unlocked — changes here affect everyone using the dashboard.")
+        if top2.button("🔒 Lock", key="admin_lock"):
+            st.session_state["admin_ok"] = False
+            st.rerun()
+
+        # ── 1. SLA Rules ────────────────────────────────────────────────────
+        st.markdown("### ⏱️ SLA Rules")
+        st.caption("Deadline = Order Date + offset. Waterfall: DOT → Plan month → FT CODE.")
+        with st.form("admin_sla"):
+            r1 = st.columns(4)
+            v_go    = r1[0].number_input("DOT-GO (days)",   1, 365, _cfg_int(cfg, "dot_go_days", 7))
+            v_lite  = r1[1].number_input("DOT-LITE (days)", 1, 365, _cfg_int(cfg, "dot_lite_days", 7))
+            v_v21   = r1[2].number_input("DOT-V2.1 (weeks)",1, 52,  _cfg_int(cfg, "dot_v21_weeks", 7))
+            v_plan  = r1[3].number_input("Plan month (weeks)",1,52, _cfg_int(cfg, "plan_weeks", 7))
+            r2 = st.columns(5)
+            v_34    = r2[0].number_input("FT-34 (weeks)", 1, 52, _cfg_int(cfg, "ft_34_weeks", 3))
+            v_45    = r2[1].number_input("FT-45 (weeks)", 1, 52, _cfg_int(cfg, "ft_45_weeks", 4))
+            v_56    = r2[2].number_input("FT-56 (weeks)", 1, 52, _cfg_int(cfg, "ft_56_weeks", 5))
+            v_67    = r2[3].number_input("FT-67 (weeks)", 1, 52, _cfg_int(cfg, "ft_67_weeks", 6))
+            v_lifo  = r2[4].number_input("LIFO14 (work days)", 1, 365, _cfg_int(cfg, "lifo14_workdays", 14))
+            v_risk  = st.number_input("At-risk threshold (days remaining)", 0, 60, _cfg_int(cfg, "sla_at_risk_days", 3))
+            if st.form_submit_button("💾 Save SLA rules", type="primary"):
+                save_config(PROD_SHEET, {
+                    "dot_go_days": v_go, "dot_lite_days": v_lite, "dot_v21_weeks": v_v21,
+                    "plan_weeks": v_plan, "ft_34_weeks": v_34, "ft_45_weeks": v_45,
+                    "ft_56_weeks": v_56, "ft_67_weeks": v_67, "lifo14_workdays": v_lifo,
+                    "sla_at_risk_days": v_risk,
+                })
+                st.success("SLA rules saved. Refreshing…")
+                st.cache_data.clear()
+                st.rerun()
+
+        # ── 2. Feature Toggles ──────────────────────────────────────────────
+        st.markdown("### 🔀 Feature Toggles")
+        with st.form("admin_toggles"):
+            t_2026   = st.checkbox("Tracker: show 2026 orders only",
+                                   _cfg_bool(cfg, "filter_2026_only", True))
+            t_transp = st.checkbox("Tracker: exclude Transportation lines",
+                                   _cfg_bool(cfg, "exclude_transportation", True))
+            t_cancel = st.checkbox("Tracker: exclude cancelled orders",
+                                   _cfg_bool(cfg, "exclude_cancelled", True))
+            t_freeze = st.checkbox("Tracker: freeze SLA on Delivery Date",
+                                   _cfg_bool(cfg, "freeze_on_delivery", True))
+            if st.form_submit_button("💾 Save toggles", type="primary"):
+                save_config(PROD_SHEET, {
+                    "filter_2026_only":       "1" if t_2026 else "0",
+                    "exclude_transportation": "1" if t_transp else "0",
+                    "exclude_cancelled":      "1" if t_cancel else "0",
+                    "freeze_on_delivery":     "1" if t_freeze else "0",
+                })
+                st.success("Toggles saved. Refreshing…")
+                st.cache_data.clear()
+                st.rerun()
+
+        # ── 3. One-Time Tasks ───────────────────────────────────────────────
+        st.markdown("### 🛠️ One-Time Tasks")
+        tc1, tc2 = st.columns(2)
+        if tc1.button("🔄 Clear cache & reload data", key="admin_clear_cache"):
+            st.cache_data.clear()
+            st.success("Cache cleared. Refreshing…")
+            st.rerun()
+        if tc2.button("🔗 Set up 2026 auto-sync formula", key="admin_setup_formula"):
+            with st.spinner("Writing formulas to 2026…"):
+                try:
+                    anchor = setup_2026_formula(PROD_SHEET)
+                    st.success(f"Done — formulas written at row {anchor}.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Setup failed: {e}")
+
+        # ── 4. Raw Config ───────────────────────────────────────────────────
+        st.markdown("### 🗄️ Raw Config (advanced)")
+        st.caption("Edit any key/value directly. Saved to the Config tab.")
+        raw_df = pd.DataFrame(sorted(cfg.items()), columns=["Key", "Value"])
+        raw_edited = st.data_editor(
+            raw_df, hide_index=True, use_container_width=True,
+            disabled=["Key"], key="admin_raw",
+        )
+        if st.button("💾 Save raw config", key="admin_save_raw"):
+            updates = {row["Key"]: row["Value"] for _, row in raw_edited.iterrows()
+                       if str(row["Key"]).strip()}
+            save_config(PROD_SHEET, updates)
+            st.success("Config saved. Refreshing…")
+            st.cache_data.clear()
+            st.rerun()
