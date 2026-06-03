@@ -1047,18 +1047,21 @@ with tab_tracker:
     # ── Merge status into orders ───────────────────────────────────────────
     # status store is keyed by SO; merge on the first occurrence per SO
     if not tracker_statuses.empty:
-        status_lookup = (
-            tracker_statuses[["SO", "Status", "Production Stage"]]
-            .drop_duplicates(subset="SO")
-        )
+        status_cols = [c for c in ["SO", "Status", "Production Stage", "Updated At"]
+                       if c in tracker_statuses.columns]
+        status_lookup = tracker_statuses[status_cols].drop_duplicates(subset="SO")
         tdf = tracker_orders.merge(status_lookup, on="SO", how="left")
     else:
         tdf = tracker_orders.copy()
         tdf["Status"] = ""
         tdf["Production Stage"] = ""
+        tdf["Updated At"] = ""
 
     tdf["Status"]           = tdf["Status"].fillna("")
     tdf["Production Stage"] = tdf["Production Stage"].fillna("")
+    if "Updated At" not in tdf.columns:
+        tdf["Updated At"] = ""
+    tdf["Updated At"] = tdf["Updated At"].fillna("")
 
     # ── Join SLA driver columns from "Orders Plan " (df = get_data(), preloaded) ─
     def _first_nonblank(s):
@@ -1101,7 +1104,21 @@ with tab_tracker:
         sla_deadline(od, s, p, f)
         for od, s, p, f in zip(order_dt, tdf["op_status"], tdf["op_plan"], tdf["op_ft"])
     ]
-    tdf["_days_left"] = (tdf["_deadline"] - today_ts).dt.days
+
+    # An item is completed when its tracker Status OR Production Stage is "Completed".
+    tdf["_completed"] = (
+        tdf["Status"].isin(SLA_TERMINAL) | tdf["Production Stage"].isin(SLA_TERMINAL)
+    )
+    # Completion date = the day it was marked (Order Status tab "Updated At"); the SLA
+    # clock freezes on that day. Fall back to today if no timestamp recorded.
+    completed_on = pd.to_datetime(
+        tdf["Updated At"].astype(str).str.replace(" UTC", "", regex=False),
+        errors="coerce",
+    ).dt.normalize()
+    completed_on = completed_on.fillna(today_ts)
+    # Reference date for the countdown: completion date if done, else today.
+    ref_date = completed_on.where(tdf["_completed"], today_ts)
+    tdf["_days_left"] = (tdf["_deadline"] - ref_date).dt.days
 
     def _sla_basis(row):
         s = str(row["op_status"]).strip().upper()
@@ -1117,7 +1134,7 @@ with tab_tracker:
     tdf["SLA Basis"] = tdf.apply(_sla_basis, axis=1)
 
     def _sla_status(row):
-        if row["Status"] in SLA_TERMINAL:        # tracker editable Status
+        if row["_completed"]:                    # Status or Production Stage = Completed
             return "Done"
         if pd.isna(row["_days_left"]):
             return "No SLA"
@@ -1128,12 +1145,21 @@ with tab_tracker:
         return "On Track"
     tdf["SLA Status"] = tdf.apply(_sla_status, axis=1)
 
-    tdf["SLA Countdown"] = tdf.apply(
-        lambda r: "—" if r["SLA Status"] in ("Done", "No SLA") else
-                  (f"{int(-r['_days_left'])}d overdue" if r["_days_left"] < 0 else
-                   ("TODAY" if r["_days_left"] == 0 else f"{int(r['_days_left'])}d left")),
-        axis=1,
-    )
+    def _sla_countdown(r):
+        d = r["_days_left"]
+        if r["SLA Status"] == "No SLA" or pd.isna(d):
+            return "—"
+        if r["_completed"]:
+            # Frozen at completion day: how it finished vs the deadline
+            if d > 0:   return f"done · {int(d)}d early"
+            if d == 0:  return "done · on time"
+            return f"done · {int(-d)}d late"
+        # Live countdown
+        if d < 0:   return f"{int(-d)}d overdue"
+        if d == 0:  return "TODAY"
+        return f"{int(d)}d left"
+    tdf["SLA Countdown"] = tdf.apply(_sla_countdown, axis=1)
+
     tdf["_deadline_str"] = tdf["_deadline"].dt.strftime("%d-%b-%Y").where(tdf["_deadline"].notna(), "—")
 
     SLA_ORDER = ["Breached", "At Risk", "On Track", "No SLA", "Done"]
