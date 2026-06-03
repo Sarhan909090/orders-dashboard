@@ -1,3 +1,4 @@
+# redeploy marker: force full environment rebuild + process restart
 altair==6.1.0
 anyio==4.13.0
 attrs==26.1.0
