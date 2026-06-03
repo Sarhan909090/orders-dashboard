@@ -1070,7 +1070,7 @@ with tab_tracker:
                 return x
         return ""
 
-    op_cols = ["SO", "Order Date", "Status", "Plan", "CS Updated Date"]
+    op_cols = ["SO", "Order Date", "Status", "Plan", "CS Updated Date", "Delivery Date"]
     has_ft  = "FT CODE" in df.columns
     if has_ft:
         op_cols.append("FT CODE")
@@ -1082,11 +1082,15 @@ with tab_tracker:
         "op_plan":       ("Plan", _first_nonblank),
         "op_cs":         ("CS Updated Date", _first_nonblank),
     }
+    if "Delivery Date" in op.columns:
+        agg["op_delivery"] = ("Delivery Date", "min")   # earliest non-null delivery
     if has_ft:
         agg["op_ft"] = ("FT CODE", _first_nonblank)
     op_lookup = op.groupby("SO").agg(**agg).reset_index()
     if not has_ft:
         op_lookup["op_ft"] = ""
+    if "op_delivery" not in op_lookup.columns:
+        op_lookup["op_delivery"] = pd.NaT
 
     tdf = tdf.merge(op_lookup, on="SO", how="left")
     for c in ["op_status", "op_plan", "op_cs", "op_ft"]:
@@ -1105,19 +1109,26 @@ with tab_tracker:
         for od, s, p, f in zip(order_dt, tdf["op_status"], tdf["op_plan"], tdf["op_ft"])
     ]
 
-    # An item is completed when its tracker Status OR Production Stage is "Completed".
-    tdf["_completed"] = (
+    # Completion signals:
+    #   (a) manually marked — tracker Status OR Production Stage = "Completed"
+    #   (b) delivered       — a Delivery Date exists in "Orders Plan "
+    tdf["_marked_completed"] = (
         tdf["Status"].isin(SLA_TERMINAL) | tdf["Production Stage"].isin(SLA_TERMINAL)
     )
-    # Completion date = the day it was marked (Order Status tab "Updated At"); the SLA
-    # clock freezes on that day. Fall back to today if no timestamp recorded.
+    tdf["op_delivery"] = pd.to_datetime(tdf["op_delivery"], errors="coerce").dt.normalize()
+    tdf["_has_delivery"] = tdf["op_delivery"].notna()
+    tdf["_completed"] = tdf["_marked_completed"] | tdf["_has_delivery"]
+
+    # Day it was manually marked (Order Status tab "Updated At"); fallback today.
     completed_on = pd.to_datetime(
         tdf["Updated At"].astype(str).str.replace(" UTC", "", regex=False),
         errors="coerce",
     ).dt.normalize()
-    completed_on = completed_on.fillna(today_ts)
-    # Reference date for the countdown: completion date if done, else today.
-    ref_date = completed_on.where(tdf["_completed"], today_ts)
+
+    # Freeze date precedence: Delivery Date → manual-completion day → today (live).
+    ref_date = pd.Series(today_ts, index=tdf.index)
+    ref_date = ref_date.where(~tdf["_marked_completed"], completed_on.fillna(today_ts))
+    ref_date = ref_date.where(~tdf["_has_delivery"], tdf["op_delivery"])
     tdf["_days_left"] = (tdf["_deadline"] - ref_date).dt.days
 
     def _sla_basis(row):
@@ -1330,3 +1341,31 @@ with tab_tracker:
                     st.success(f"Saved {len(changed_sos):,} order(s). Refreshing…")
                     st.cache_data.clear()
                     st.rerun()
+
+    # ── Revision check: delivered but not marked Completed ─────────────────
+    st.divider()
+    st.subheader("🔍 Revision Check — Delivered but not marked Completed")
+    st.caption(
+        "SOs that have a **Delivery Date** in the Orders Plan sheet but are **not** "
+        "marked Completed (Status / Production Stage) in the tracker. Their SLA is "
+        "already frozen at the Delivery Date — review and mark them Completed if needed."
+    )
+
+    mismatch = tdf[tdf["_has_delivery"] & ~tdf["_marked_completed"]].copy()
+    if mismatch.empty:
+        st.success("✅ No mismatches — every delivered SO is marked Completed.")
+    else:
+        audit = (
+            mismatch.sort_values("op_delivery")
+            .drop_duplicates(subset="SO")[
+                ["SO", "Customer Name", "op_delivery", "Status",
+                 "Production Stage", "SLA Basis", "_deadline_str"]
+            ]
+            .rename(columns={
+                "op_delivery":   "Delivery Date",
+                "Status":        "Tracker Status",
+                "_deadline_str": "SLA Deadline",
+            })
+        )
+        st.warning(f"⚠️ {len(audit):,} delivered SO(s) not yet marked Completed.")
+        st.dataframe(fmt_dates(audit), use_container_width=True, hide_index=True)
