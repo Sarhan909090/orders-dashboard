@@ -1151,16 +1151,28 @@ with tab_tracker:
     edited = st.data_editor(
         display_df,
         column_config={
+            "SO":              st.column_config.TextColumn("SO", width="small"),
+            "Customer Name":   st.column_config.TextColumn("Customer Name", width="medium"),
+            "Order Date":      st.column_config.TextColumn("Order Date", width="small"),
+            "Item Sku":        st.column_config.TextColumn("Item Sku", width="medium"),
+            "Item Description": st.column_config.TextColumn("Item Description", width="large"),
+            "Item Note":       st.column_config.TextColumn("Item Note", width="medium"),
+            "Item QTY":        st.column_config.NumberColumn("Qty", width="small"),
+            "Order Status":    st.column_config.TextColumn("Order Status", width="small"),
             "Status": st.column_config.SelectboxColumn(
-                "Status", options=STATUS_OPTS, required=False,
+                "Status", options=STATUS_OPTS, required=False, width="medium",
             ),
             "Production Stage": st.column_config.SelectboxColumn(
-                "Production Stage", options=STAGE_OPTS, required=False,
+                "Production Stage", options=STAGE_OPTS, required=False, width="medium",
             ),
+            "SLA Status":      st.column_config.TextColumn("SLA Status", width="small"),
+            "SLA Countdown":   st.column_config.TextColumn("SLA Countdown", width="small"),
+            "SLA Deadline":    st.column_config.TextColumn("SLA Deadline", width="small"),
         },
         disabled=[c for c in display_df.columns if c not in ("Status", "Production Stage")],
         hide_index=True,
         use_container_width=True,
+        height=600,
         key="tracker_editor",
     )
 
