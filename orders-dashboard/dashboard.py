@@ -17,14 +17,13 @@ if col_refresh.button("🔄 Refresh", help="Reload all data from Google Sheet"):
 SHEET      = "https://docs.google.com/spreadsheets/d/1cEpLqAb_sqOoGxQ7GezAgyAlfQz4fOlpPVRuX-mimaA/edit"
 PROD_SHEET = "https://docs.google.com/spreadsheets/d/1zpdNjDFPRi7RCvMImn3-soW0P3dYubS1d76FwsjfL28/edit"
 
-# ── SLA CONFIG — edit these values to set your rule ──────────────────────────
-SLA_CONFIG = {
-    "start_column":      "Order Date",        # ← CHANGE: column that starts the clock
-    "target_days":       14,                  # ← CHANGE: calendar days until deadline
-    "at_risk_days":      3,                   # ← CHANGE: days remaining when colour turns amber
-    "clock":             "calendar",          # "calendar" only (business-hours not yet impl.)
-    "terminal_statuses": ["Completed", "Cancelled"],  # clock stops for these statuses
-}
+# ── SLA RULES — deadline = Order Date + offset, by waterfall DOT → Plan → FT CODE
+SLA_AT_RISK_DAYS = 3                  # days remaining when colour turns amber
+SLA_TERMINAL     = ["Completed"]      # tracker editable Status that stops the clock
+DOT_RULES  = {"DOT-GO": ("days", 7), "DOT-LITE": ("days", 7), "DOT-V2.1": ("weeks", 7)}
+PLAN_WEEKS = 7                        # any month Plan (not Online/Fast Track) → 7 weeks
+FT_RULES   = {"FT-34": ("weeks", 3), "FT-45": ("weeks", 4), "FT-56": ("weeks", 5),
+              "FT-67": ("weeks", 6), "LIFO14": ("workdays", 14)}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -32,6 +31,43 @@ def week_start(date):
     """Return the Saturday that begins the Sat–Thu week containing 'date'."""
     days_back = (date.weekday() - 5) % 7
     return date - pd.Timedelta(days=int(days_back))
+
+
+def add_working_days(start, n, off_weekday=4):
+    """Add n working days to 'start', skipping Fridays (weekday 4). Sat–Thu = working."""
+    d = start
+    added = 0
+    while added < n:
+        d += pd.Timedelta(days=1)
+        if d.weekday() != off_weekday:
+            added += 1
+    return d
+
+
+def sla_deadline(order_date, status, plan, ft_code):
+    """Compute the SLA deadline via waterfall: DOT → Plan month → FT CODE.
+    Returns a Timestamp or NaT when no rule matches."""
+    if pd.isna(order_date):
+        return pd.NaT
+    s = str(status).strip().upper()
+    p = str(plan).strip()
+    f = str(ft_code).strip().upper()
+    # 1. DOT type
+    if s in ("DOT-GO", "DOT-LITE"):
+        return order_date + pd.Timedelta(days=7)
+    if s == "DOT-V2.1":
+        return order_date + pd.Timedelta(weeks=7)
+    # 2. Plan month (any non-blank value that isn't Online/Fast Track)
+    if p and p.lower() not in ("", "nan", "online/fast track"):
+        return order_date + pd.Timedelta(weeks=PLAN_WEEKS)
+    # 3. FT CODE
+    if f in FT_RULES:
+        unit, n = FT_RULES[f]
+        if unit == "weeks":
+            return order_date + pd.Timedelta(weeks=n)
+        if unit == "workdays":
+            return add_working_days(order_date, n)
+    return pd.NaT
 
 
 def target_week(order_date, plan):
@@ -1024,45 +1060,86 @@ with tab_tracker:
     tdf["Status"]           = tdf["Status"].fillna("")
     tdf["Production Stage"] = tdf["Production Stage"].fillna("")
 
-    # ── SLA computation ────────────────────────────────────────────────────
-    today_ts   = pd.Timestamp.today().normalize()
-    start_col  = SLA_CONFIG["start_column"]
-    target_d   = SLA_CONFIG["target_days"]
-    at_risk_d  = SLA_CONFIG["at_risk_days"]
-    terminal   = SLA_CONFIG["terminal_statuses"]
+    # ── Join SLA driver columns from "Orders Plan " (df = get_data(), preloaded) ─
+    def _first_nonblank(s):
+        for x in s:
+            if str(x).strip() and str(x).strip().lower() != "nan":
+                return x
+        return ""
 
-    if start_col in tdf.columns:
-        tdf["_deadline"] = tdf[start_col] + pd.Timedelta(days=target_d)
-        tdf["_days_left"] = (tdf["_deadline"] - today_ts).dt.days
+    op_cols = ["SO", "Order Date", "Status", "Plan", "CS Updated Date"]
+    has_ft  = "FT CODE" in df.columns
+    if has_ft:
+        op_cols.append("FT CODE")
+    op = df[[c for c in op_cols if c in df.columns]].copy()
 
-        def _sla_status(row):
-            if row["Status"] in terminal:
-                return "Done"
-            if pd.isna(row["_days_left"]):
-                return "No Date"
-            if row["_days_left"] < 0:
-                return "Breached"
-            if row["_days_left"] <= at_risk_d:
-                return "At Risk"
-            return "On Track"
+    agg = {
+        "op_order_date": ("Order Date", "min"),
+        "op_status":     ("Status", _first_nonblank),
+        "op_plan":       ("Plan", _first_nonblank),
+        "op_cs":         ("CS Updated Date", _first_nonblank),
+    }
+    if has_ft:
+        agg["op_ft"] = ("FT CODE", _first_nonblank)
+    op_lookup = op.groupby("SO").agg(**agg).reset_index()
+    if not has_ft:
+        op_lookup["op_ft"] = ""
 
-        tdf["SLA Status"]    = tdf.apply(_sla_status, axis=1)
-        tdf["SLA Countdown"] = tdf.apply(
-            lambda r: "—" if r["SLA Status"] in ("Done", "No Date") else
-                      (f"{int(-r['_days_left'])}d overdue" if r["_days_left"] < 0 else
-                       ("TODAY" if r["_days_left"] == 0 else f"{int(r['_days_left'])}d left")),
-            axis=1,
-        )
-        tdf["_deadline_str"] = tdf["_deadline"].dt.strftime("%d-%b-%Y").where(tdf["_deadline"].notna(), "—")
-    else:
-        tdf["SLA Status"]    = "No Date"
-        tdf["SLA Countdown"] = "—"
-        tdf["_deadline_str"] = "—"
+    tdf = tdf.merge(op_lookup, on="SO", how="left")
+    for c in ["op_status", "op_plan", "op_cs", "op_ft"]:
+        tdf[c] = tdf[c].fillna("")
 
-    SLA_ORDER = ["Breached", "At Risk", "On Track", "No Date", "Done"]
+    # Exclude cancelled orders (per Orders Plan Status / CS Updated Date)
+    cancel_mask = tdf.apply(lambda r: _is_canceled(r["op_status"], r["op_cs"]), axis=1)
+    tdf = tdf[~cancel_mask].reset_index(drop=True)
+
+    # ── SLA computation (rule-based) ─────────────────────────────────────────
+    today_ts = pd.Timestamp.today().normalize()
+    order_dt = (tdf["op_order_date"].fillna(tdf["Order Date"])
+                if "Order Date" in tdf.columns else tdf["op_order_date"])
+    tdf["_deadline"] = [
+        sla_deadline(od, s, p, f)
+        for od, s, p, f in zip(order_dt, tdf["op_status"], tdf["op_plan"], tdf["op_ft"])
+    ]
+    tdf["_days_left"] = (tdf["_deadline"] - today_ts).dt.days
+
+    def _sla_basis(row):
+        s = str(row["op_status"]).strip().upper()
+        p = str(row["op_plan"]).strip()
+        f = str(row["op_ft"]).strip().upper()
+        if s in DOT_RULES:
+            return s
+        if p and p.lower() not in ("", "nan", "online/fast track"):
+            return "Plan · 7w"
+        if f in FT_RULES:
+            return f
+        return "—"
+    tdf["SLA Basis"] = tdf.apply(_sla_basis, axis=1)
+
+    def _sla_status(row):
+        if row["Status"] in SLA_TERMINAL:        # tracker editable Status
+            return "Done"
+        if pd.isna(row["_days_left"]):
+            return "No SLA"
+        if row["_days_left"] < 0:
+            return "Breached"
+        if row["_days_left"] <= SLA_AT_RISK_DAYS:
+            return "At Risk"
+        return "On Track"
+    tdf["SLA Status"] = tdf.apply(_sla_status, axis=1)
+
+    tdf["SLA Countdown"] = tdf.apply(
+        lambda r: "—" if r["SLA Status"] in ("Done", "No SLA") else
+                  (f"{int(-r['_days_left'])}d overdue" if r["_days_left"] < 0 else
+                   ("TODAY" if r["_days_left"] == 0 else f"{int(r['_days_left'])}d left")),
+        axis=1,
+    )
+    tdf["_deadline_str"] = tdf["_deadline"].dt.strftime("%d-%b-%Y").where(tdf["_deadline"].notna(), "—")
+
+    SLA_ORDER = ["Breached", "At Risk", "On Track", "No SLA", "Done"]
     SLA_COLOUR = {
         "Breached": "🔴", "At Risk": "🟡", "On Track": "🟢",
-        "No Date": "⚪", "Done": "✅",
+        "No SLA": "⚪", "Done": "✅",
     }
 
     # ── Filters ────────────────────────────────────────────────────────────
@@ -1123,12 +1200,12 @@ with tab_tracker:
     # ── Read-only summary table ─────────────────────────────────────────────
     st.subheader("Order List")
     st.caption(f"{len(view):,} item row(s) across {n_total:,} order(s)  ·  "
-               f"SLA start: **{start_col}** + {target_d} days  ·  "
-               f"At-risk threshold: {at_risk_d} days")
+               f"Deadline by rule: DOT-GO/LITE 7d · DOT-V2.1 7w · Plan month 7w · "
+               f"FT-34/45/56 3/4/5w · LIFO14 14 working days · At-risk ≤ {SLA_AT_RISK_DAYS}d")
 
     display_cols = ["SO", "Customer Name", "Order Date", "Item Sku", "Item Name",
                     "Item Note", "Item QTY", "Order Status", "Status", "Production Stage",
-                    "SLA Status", "SLA Countdown", "_deadline_str"]
+                    "SLA Basis", "SLA Status", "SLA Countdown", "_deadline_str"]
     table_view = view[[c for c in display_cols if c in view.columns]].rename(columns={
         "Item Name":     "Item Description",
         "_deadline_str": "SLA Deadline",
@@ -1165,6 +1242,7 @@ with tab_tracker:
             "Production Stage": st.column_config.SelectboxColumn(
                 "Production Stage", options=STAGE_OPTS, required=False, width="medium",
             ),
+            "SLA Basis":       st.column_config.TextColumn("SLA Basis", width="small"),
             "SLA Status":      st.column_config.TextColumn("SLA Status", width="small"),
             "SLA Countdown":   st.column_config.TextColumn("SLA Countdown", width="small"),
             "SLA Deadline":    st.column_config.TextColumn("SLA Deadline", width="small"),
