@@ -13,8 +13,11 @@ from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_ta
 ADMIN_PASSWORD = "deci2026"
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
-col_title, col_refresh = st.columns([9, 1])
+col_title, col_admin, col_refresh = st.columns([8, 1, 1])
 col_title.title("Orders Dashboard")
+if col_admin.button("⚙️ Admin", help="Open the admin panel"):
+    st.session_state["show_admin"] = not st.session_state.get("show_admin", False)
+    st.rerun()
 if col_refresh.button("🔄 Refresh", help="Reload all data from Google Sheet"):
     st.cache_data.clear()
     st.rerun()
@@ -41,6 +44,121 @@ def _cfg_bool(cfg, key, default=True):
 def _cfg_clamp(cfg, key, default, lo, hi):
     """Config int clamped into [lo, hi] — keeps number_input from raising on bad data."""
     return min(max(_cfg_int(cfg, key, default), lo), hi)
+
+
+def render_admin_panel(cfg):
+    """Password-gated admin panel (opened via the ⚙️ Admin header button)."""
+    st.subheader("⚙️ Admin Panel")
+    if st.button("✖ Close admin", key="admin_close"):
+        st.session_state["show_admin"] = False
+        st.rerun()
+
+    def _admin_pw():
+        try:
+            if "admin_password" in st.secrets:
+                return str(st.secrets["admin_password"])
+        except Exception:
+            pass
+        return ADMIN_PASSWORD
+
+    if not st.session_state.get("admin_ok", False):
+        st.info("This panel is restricted. Enter the admin password to continue.")
+        pw = st.text_input("Admin password", type="password", key="admin_pw_input")
+        c_login, _ = st.columns([1, 4])
+        if c_login.button("🔓 Unlock", key="admin_unlock"):
+            if pw == _admin_pw():
+                st.session_state["admin_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    else:
+        top1, top2 = st.columns([4, 1])
+        top1.success("Unlocked — changes here affect everyone using the dashboard.")
+        if top2.button("🔒 Lock", key="admin_lock"):
+            st.session_state["admin_ok"] = False
+            st.rerun()
+
+        # ── 1. SLA Rules ────────────────────────────────────────────────────
+        st.markdown("### ⏱️ SLA Rules")
+        st.caption("Deadline = Order Date + offset. Waterfall: DOT → Plan month → FT CODE.")
+        with st.form("admin_sla"):
+            r1 = st.columns(4)
+            v_go    = r1[0].number_input("DOT-GO (days)",   1, 365, _cfg_clamp(cfg, "dot_go_days", 7, 1, 365))
+            v_lite  = r1[1].number_input("DOT-LITE (days)", 1, 365, _cfg_clamp(cfg, "dot_lite_days", 7, 1, 365))
+            v_v21   = r1[2].number_input("DOT-V2.1 (weeks)",1, 52,  _cfg_clamp(cfg, "dot_v21_weeks", 7, 1, 52))
+            v_plan  = r1[3].number_input("Plan month (weeks)",1,52, _cfg_clamp(cfg, "plan_weeks", 7, 1, 52))
+            r2 = st.columns(5)
+            v_34    = r2[0].number_input("FT-34 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_34_weeks", 3, 1, 52))
+            v_45    = r2[1].number_input("FT-45 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_45_weeks", 4, 1, 52))
+            v_56    = r2[2].number_input("FT-56 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_56_weeks", 5, 1, 52))
+            v_67    = r2[3].number_input("FT-67 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_67_weeks", 6, 1, 52))
+            v_lifo  = r2[4].number_input("LIFO14 (work days)", 1, 365, _cfg_clamp(cfg, "lifo14_workdays", 14, 1, 365))
+            v_risk  = st.number_input("At-risk threshold (days remaining)", 0, 60, _cfg_clamp(cfg, "sla_at_risk_days", 3, 0, 60))
+            if st.form_submit_button("💾 Save SLA rules", type="primary"):
+                save_config(PROD_SHEET, {
+                    "dot_go_days": v_go, "dot_lite_days": v_lite, "dot_v21_weeks": v_v21,
+                    "plan_weeks": v_plan, "ft_34_weeks": v_34, "ft_45_weeks": v_45,
+                    "ft_56_weeks": v_56, "ft_67_weeks": v_67, "lifo14_workdays": v_lifo,
+                    "sla_at_risk_days": v_risk,
+                })
+                st.success("SLA rules saved. Refreshing…")
+                st.cache_data.clear()
+                st.rerun()
+
+        # ── 2. Feature Toggles ──────────────────────────────────────────────
+        st.markdown("### 🔀 Feature Toggles")
+        with st.form("admin_toggles"):
+            t_2026   = st.checkbox("Tracker: show 2026 orders only",
+                                   _cfg_bool(cfg, "filter_2026_only", True))
+            t_transp = st.checkbox("Tracker: exclude Transportation lines",
+                                   _cfg_bool(cfg, "exclude_transportation", True))
+            t_cancel = st.checkbox("Tracker: exclude cancelled orders",
+                                   _cfg_bool(cfg, "exclude_cancelled", True))
+            t_freeze = st.checkbox("Tracker: freeze SLA on Delivery Date",
+                                   _cfg_bool(cfg, "freeze_on_delivery", True))
+            if st.form_submit_button("💾 Save toggles", type="primary"):
+                save_config(PROD_SHEET, {
+                    "filter_2026_only":       "1" if t_2026 else "0",
+                    "exclude_transportation": "1" if t_transp else "0",
+                    "exclude_cancelled":      "1" if t_cancel else "0",
+                    "freeze_on_delivery":     "1" if t_freeze else "0",
+                })
+                st.success("Toggles saved. Refreshing…")
+                st.cache_data.clear()
+                st.rerun()
+
+        # ── 3. One-Time Tasks ───────────────────────────────────────────────
+        st.markdown("### 🛠️ One-Time Tasks")
+        tc1, tc2 = st.columns(2)
+        if tc1.button("🔄 Clear cache & reload data", key="admin_clear_cache"):
+            st.cache_data.clear()
+            st.success("Cache cleared. Refreshing…")
+            st.rerun()
+        if tc2.button("🔗 Set up 2026 auto-sync formula", key="admin_setup_formula"):
+            with st.spinner("Writing formulas to 2026…"):
+                try:
+                    anchor = setup_2026_formula(PROD_SHEET)
+                    st.success(f"Done — formulas written at row {anchor}.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Setup failed: {e}")
+
+        # ── 4. Raw Config ───────────────────────────────────────────────────
+        st.markdown("### 🗄️ Raw Config (advanced)")
+        st.caption("Edit any key/value directly. Saved to the Config tab.")
+        raw_df = pd.DataFrame(sorted(cfg.items()), columns=["Key", "Value"])
+        raw_edited = st.data_editor(
+            raw_df, hide_index=True, use_container_width=True,
+            disabled=["Key"], key="admin_raw",
+        )
+        if st.button("💾 Save raw config", key="admin_save_raw"):
+            updates = {row["Key"]: row["Value"] for _, row in raw_edited.iterrows()
+                       if str(row["Key"]).strip()}
+            save_config(PROD_SHEET, updates)
+            st.success("Config saved. Refreshing…")
+            st.cache_data.clear()
+            st.rerun()
+
 
 
 def build_sla_rules(cfg):
@@ -349,8 +467,12 @@ for _ensure in (ensure_order_status_tab, ensure_config_tab):
 cfg       = get_config()
 sla_rules = build_sla_rules(cfg)
 
-tab_orders, tab_kpi, tab_dot, tab_tracker, tab_admin = st.tabs(
-    ["Orders", "Delivery KPI", "DOT Orders", "Production Tracker", "⚙️ Admin"]
+# Admin panel — opened via the ⚙️ Admin button in the header (renders above the tabs)
+if st.session_state.get("show_admin", False):
+    render_admin_panel(cfg)
+
+tab_orders, tab_kpi, tab_dot, tab_tracker = st.tabs(
+    ["Orders", "Delivery KPI", "DOT Orders", "Production Tracker"]
 )
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1461,116 +1583,3 @@ with tab_tracker:
                 st.success(f"Marked {len(sos):,} order(s) as Completed. Refreshing…")
                 st.cache_data.clear()
                 st.rerun()
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 5 — ADMIN  (password-gated)
-# ════════════════════════════════════════════════════════════════════════════
-with tab_admin:
-    st.subheader("⚙️ Admin Panel")
-
-    def _admin_pw():
-        try:
-            if "admin_password" in st.secrets:
-                return str(st.secrets["admin_password"])
-        except Exception:
-            pass
-        return ADMIN_PASSWORD
-
-    if not st.session_state.get("admin_ok", False):
-        st.info("This panel is restricted. Enter the admin password to continue.")
-        pw = st.text_input("Admin password", type="password", key="admin_pw_input")
-        c_login, _ = st.columns([1, 4])
-        if c_login.button("🔓 Unlock", key="admin_unlock"):
-            if pw == _admin_pw():
-                st.session_state["admin_ok"] = True
-                st.rerun()
-            else:
-                st.error("Incorrect password.")
-    else:
-        top1, top2 = st.columns([4, 1])
-        top1.success("Unlocked — changes here affect everyone using the dashboard.")
-        if top2.button("🔒 Lock", key="admin_lock"):
-            st.session_state["admin_ok"] = False
-            st.rerun()
-
-        # ── 1. SLA Rules ────────────────────────────────────────────────────
-        st.markdown("### ⏱️ SLA Rules")
-        st.caption("Deadline = Order Date + offset. Waterfall: DOT → Plan month → FT CODE.")
-        with st.form("admin_sla"):
-            r1 = st.columns(4)
-            v_go    = r1[0].number_input("DOT-GO (days)",   1, 365, _cfg_clamp(cfg, "dot_go_days", 7, 1, 365))
-            v_lite  = r1[1].number_input("DOT-LITE (days)", 1, 365, _cfg_clamp(cfg, "dot_lite_days", 7, 1, 365))
-            v_v21   = r1[2].number_input("DOT-V2.1 (weeks)",1, 52,  _cfg_clamp(cfg, "dot_v21_weeks", 7, 1, 52))
-            v_plan  = r1[3].number_input("Plan month (weeks)",1,52, _cfg_clamp(cfg, "plan_weeks", 7, 1, 52))
-            r2 = st.columns(5)
-            v_34    = r2[0].number_input("FT-34 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_34_weeks", 3, 1, 52))
-            v_45    = r2[1].number_input("FT-45 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_45_weeks", 4, 1, 52))
-            v_56    = r2[2].number_input("FT-56 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_56_weeks", 5, 1, 52))
-            v_67    = r2[3].number_input("FT-67 (weeks)", 1, 52, _cfg_clamp(cfg, "ft_67_weeks", 6, 1, 52))
-            v_lifo  = r2[4].number_input("LIFO14 (work days)", 1, 365, _cfg_clamp(cfg, "lifo14_workdays", 14, 1, 365))
-            v_risk  = st.number_input("At-risk threshold (days remaining)", 0, 60, _cfg_clamp(cfg, "sla_at_risk_days", 3, 0, 60))
-            if st.form_submit_button("💾 Save SLA rules", type="primary"):
-                save_config(PROD_SHEET, {
-                    "dot_go_days": v_go, "dot_lite_days": v_lite, "dot_v21_weeks": v_v21,
-                    "plan_weeks": v_plan, "ft_34_weeks": v_34, "ft_45_weeks": v_45,
-                    "ft_56_weeks": v_56, "ft_67_weeks": v_67, "lifo14_workdays": v_lifo,
-                    "sla_at_risk_days": v_risk,
-                })
-                st.success("SLA rules saved. Refreshing…")
-                st.cache_data.clear()
-                st.rerun()
-
-        # ── 2. Feature Toggles ──────────────────────────────────────────────
-        st.markdown("### 🔀 Feature Toggles")
-        with st.form("admin_toggles"):
-            t_2026   = st.checkbox("Tracker: show 2026 orders only",
-                                   _cfg_bool(cfg, "filter_2026_only", True))
-            t_transp = st.checkbox("Tracker: exclude Transportation lines",
-                                   _cfg_bool(cfg, "exclude_transportation", True))
-            t_cancel = st.checkbox("Tracker: exclude cancelled orders",
-                                   _cfg_bool(cfg, "exclude_cancelled", True))
-            t_freeze = st.checkbox("Tracker: freeze SLA on Delivery Date",
-                                   _cfg_bool(cfg, "freeze_on_delivery", True))
-            if st.form_submit_button("💾 Save toggles", type="primary"):
-                save_config(PROD_SHEET, {
-                    "filter_2026_only":       "1" if t_2026 else "0",
-                    "exclude_transportation": "1" if t_transp else "0",
-                    "exclude_cancelled":      "1" if t_cancel else "0",
-                    "freeze_on_delivery":     "1" if t_freeze else "0",
-                })
-                st.success("Toggles saved. Refreshing…")
-                st.cache_data.clear()
-                st.rerun()
-
-        # ── 3. One-Time Tasks ───────────────────────────────────────────────
-        st.markdown("### 🛠️ One-Time Tasks")
-        tc1, tc2 = st.columns(2)
-        if tc1.button("🔄 Clear cache & reload data", key="admin_clear_cache"):
-            st.cache_data.clear()
-            st.success("Cache cleared. Refreshing…")
-            st.rerun()
-        if tc2.button("🔗 Set up 2026 auto-sync formula", key="admin_setup_formula"):
-            with st.spinner("Writing formulas to 2026…"):
-                try:
-                    anchor = setup_2026_formula(PROD_SHEET)
-                    st.success(f"Done — formulas written at row {anchor}.")
-                    st.cache_data.clear()
-                except Exception as e:
-                    st.error(f"Setup failed: {e}")
-
-        # ── 4. Raw Config ───────────────────────────────────────────────────
-        st.markdown("### 🗄️ Raw Config (advanced)")
-        st.caption("Edit any key/value directly. Saved to the Config tab.")
-        raw_df = pd.DataFrame(sorted(cfg.items()), columns=["Key", "Value"])
-        raw_edited = st.data_editor(
-            raw_df, hide_index=True, use_container_width=True,
-            disabled=["Key"], key="admin_raw",
-        )
-        if st.button("💾 Save raw config", key="admin_save_raw"):
-            updates = {row["Key"]: row["Value"] for _, row in raw_edited.iterrows()
-                       if str(row["Key"]).strip()}
-            save_config(PROD_SHEET, updates)
-            st.success("Config saved. Refreshing…")
-            st.cache_data.clear()
-            st.rerun()
