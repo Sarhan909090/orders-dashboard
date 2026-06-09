@@ -1478,7 +1478,8 @@ with tab_tracker:
         disabled=[c for c in display_df.columns if c not in ("Status", "Production Stage")],
         hide_index=True,
         use_container_width=True,
-        height=600,
+        height=900,        # taller section
+        row_height=26,     # tighter rows → more lines visible
         key="tracker_editor",
     )
 
