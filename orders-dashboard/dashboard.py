@@ -15,9 +15,10 @@ ADMIN_PASSWORD = "deci2026"
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
 
-# Auto-refresh every 60s — silent rerun so new sheet rows surface without clicks.
+# Auto-refresh: silent rerun every 15 min (the fastest cadence — drives the Production
+# Tracker). Other tabs refresh every 30 min via their longer cache TTLs below.
 # Filters persist (all widgets are keyed); this does NOT clear caches or reset widgets.
-st_autorefresh(interval=60_000, key="auto_refresh")
+st_autorefresh(interval=15 * 60_000, key="auto_refresh")
 
 col_title, col_admin, col_refresh = st.columns([8, 1, 1])
 col_title.title("Orders Dashboard")
@@ -314,7 +315,7 @@ def classify_delivery(row):
     return "Late"
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)   # 30 min — Orders/KPI/DOT tabs
 def get_data() -> pd.DataFrame:
     df = load_orders(SHEET)
 
@@ -432,12 +433,12 @@ def fmt_dates(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)   # 30 min — DOT tab
 def get_dot_items() -> pd.DataFrame:
     return load_dot_items(SHEET)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=900)   # 15 min — Production Tracker
 def get_tracker_orders(year_2026_only: bool = True, exclude_transport: bool = True) -> pd.DataFrame:
     """Load 'Copy of Data per order' for the tracker. Toggles are cache-keyed."""
     df = load_tracker_orders(PROD_SHEET)
@@ -448,13 +449,13 @@ def get_tracker_orders(year_2026_only: bool = True, exclude_transport: bool = Tr
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=900)   # 15 min — Production Tracker (status saves force-clear anyway)
 def get_order_statuses() -> pd.DataFrame:
     """Load the 'Order Status' write-back tab (very short TTL — status changes must be fresh)."""
     return load_order_statuses(PROD_SHEET)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=900)   # 15 min (admin saves force-clear immediately)
 def get_config() -> dict:
     """Load admin config (SLA rules + toggles) from the Config tab."""
     return load_config(PROD_SHEET)
