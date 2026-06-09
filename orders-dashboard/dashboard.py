@@ -228,8 +228,11 @@ def sla_deadline(order_date, status, plan, ft_code, rules):
     if s in rules["dot"]:
         unit, n = rules["dot"][s]
         return _apply_offset(order_date, unit, n)
-    # 2. Plan month (any non-blank value that isn't Online/Fast Track)
-    if p and p.lower() not in ("", "nan", "online/fast track"):
+    # "Project" plan → no SLA (handled separately; just a day counter)
+    if p.lower() == "project":
+        return pd.NaT
+    # 2. Plan month (any non-blank value that isn't Online/Fast Track or Project)
+    if p and p.lower() not in ("", "nan", "online/fast track", "project"):
         return order_date + pd.Timedelta(weeks=rules["plan_weeks"])
     # 3. FT CODE
     if f in rules["ft"]:
@@ -1339,6 +1342,10 @@ with tab_tracker:
     ref_date = ref_date.where(~tdf["_has_delivery"], tdf["op_delivery"])
     tdf["_days_left"] = (tdf["_deadline"] - ref_date).dt.days
 
+    # "Project" plan → no SLA, just a running day count (never breaches)
+    tdf["_is_project"] = tdf["op_plan"].astype(str).str.strip().str.lower() == "project"
+    tdf["_days_running"] = (today_ts - order_dt).dt.days
+
     _plan_weeks = sla_rules["plan_weeks"]
     _at_risk    = sla_rules["at_risk"]
 
@@ -1348,6 +1355,8 @@ with tab_tracker:
         f = str(row["op_ft"]).strip().upper()
         if s in sla_rules["dot"]:
             return s
+        if p.lower() == "project":
+            return "Project"
         if p and p.lower() not in ("", "nan", "online/fast track"):
             return f"Plan · {_plan_weeks}w"
         if f in sla_rules["ft"]:
@@ -1358,6 +1367,8 @@ with tab_tracker:
     def _sla_status(row):
         if row["_completed"]:                    # Status or Production Stage = Completed
             return "Done"
+        if row["_is_project"]:                   # Project plan → no SLA, just counting
+            return "Project"
         if pd.isna(row["_days_left"]):
             return "No SLA"
         if row["_days_left"] < 0:
@@ -1368,6 +1379,9 @@ with tab_tracker:
     tdf["SLA Status"] = tdf.apply(_sla_status, axis=1)
 
     def _sla_countdown(r):
+        if r["SLA Status"] == "Project":
+            dr = r["_days_running"]
+            return f"{int(dr)}d running" if pd.notna(dr) else "—"
         d = r["_days_left"]
         if r["SLA Status"] == "No SLA" or pd.isna(d):
             return "—"
@@ -1384,10 +1398,10 @@ with tab_tracker:
 
     tdf["_deadline_str"] = tdf["_deadline"].dt.strftime("%d-%b-%Y").where(tdf["_deadline"].notna(), "—")
 
-    SLA_ORDER = ["Breached", "At Risk", "On Track", "No SLA", "Done"]
+    SLA_ORDER = ["Breached", "At Risk", "On Track", "Project", "No SLA", "Done"]
     SLA_COLOUR = {
         "Breached": "🔴", "At Risk": "🟡", "On Track": "🟢",
-        "No SLA": "⚪", "Done": "✅",
+        "Project": "🔵", "No SLA": "⚪", "Done": "✅",
     }
 
     # ── Filters ────────────────────────────────────────────────────────────
