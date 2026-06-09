@@ -341,10 +341,11 @@ def load_order_statuses(sheet_url_or_name: str) -> pd.DataFrame:
 
 
 def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
-    """Read per-SO Status + Production Stage straight from the '2026' tab so manual
-    edits there reflect on the tracker. Returns: SO, Status_2026, Stage_2026
-    (first non-blank value per SO)."""
-    empty = pd.DataFrame(columns=["SO", "Status_2026", "Stage_2026"])
+    """Read per-ITEM Status + Production Stage straight from the '2026' tab so manual
+    edits there reflect on the tracker at item level. The 2026 'Item Ref' column
+    (blank header, col G) holds the Item Sku, which matches 'Copy of Data per order'.
+    Returns: SO, Item Sku, Status_2026, Stage_2026 (first non-blank per SO+Sku)."""
+    empty = pd.DataFrame(columns=["SO", "Item Sku", "Status_2026", "Stage_2026"])
     sheet = _open_sheet(sheet_url_or_name, SCOPES)
     try:
         rows = sheet.worksheet("2026").get_all_values()
@@ -364,9 +365,13 @@ def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
         heads.append(k)
 
     d = pd.DataFrame(rows[1:], columns=heads)
-    so_col = "f" if "f" in d.columns else heads[0]
-    d = d.rename(columns={so_col: "SO", "Statues": "Status_2026", "Status Manu": "Stage_2026"})
-    for c in ("Status_2026", "Stage_2026"):
+    so_col  = "f" if "f" in d.columns else heads[0]
+    sku_col = "_col6" if "_col6" in d.columns else (heads[6] if len(heads) > 6 else None)
+    ren = {so_col: "SO", "Statues": "Status_2026", "Status Manu": "Stage_2026"}
+    if sku_col:
+        ren[sku_col] = "Item Sku"
+    d = d.rename(columns=ren)
+    for c in ("Item Sku", "Status_2026", "Stage_2026"):
         if c not in d.columns:
             d[c] = ""
     d = d[d["SO"].astype(str).str.strip().astype(bool)]
@@ -379,7 +384,7 @@ def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
                 return x
         return ""
 
-    return (d.groupby("SO")
+    return (d.groupby(["SO", "Item Sku"])
              .agg(Status_2026=("Status_2026", _fnb), Stage_2026=("Stage_2026", _fnb))
              .reset_index())
 

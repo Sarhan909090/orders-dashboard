@@ -1,4 +1,4 @@
-# redeploy marker: read 2026 stages (force env rebuild / module reload)
+# redeploy marker: per-item 2026 stages (force env rebuild / module reload)
 streamlit-autorefresh==1.0.1
 altair==6.1.0
 anyio==4.13.0

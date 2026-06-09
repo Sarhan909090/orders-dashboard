@@ -1253,11 +1253,12 @@ with tab_tracker:
         tdf["Updated At"] = ""
     tdf["Updated At"] = tdf["Updated At"].fillna("")
 
-    # Manual edits typed directly into the 2026 tab take precedence over the
+    # Per-ITEM Status/Stage typed directly into the 2026 tab take precedence over the
     # Order Status tab (fall back to Order Status when the 2026 cell is blank).
+    # Joined on SO + Item Sku so each item shows its own stage.
     stages_2026 = get_2026_stages()
-    if not stages_2026.empty:
-        tdf = tdf.merge(stages_2026, on="SO", how="left")
+    if not stages_2026.empty and "Item Sku" in tdf.columns:
+        tdf = tdf.merge(stages_2026, on=["SO", "Item Sku"], how="left")
         for c in ("Status_2026", "Stage_2026"):
             tdf[c] = tdf[c].fillna("")
         tdf["Status"] = tdf["Status_2026"].where(
