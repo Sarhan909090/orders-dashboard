@@ -340,6 +340,50 @@ def load_order_statuses(sheet_url_or_name: str) -> pd.DataFrame:
     return pd.DataFrame(rows[1:], columns=rows[0])
 
 
+def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
+    """Read per-SO Status + Production Stage straight from the '2026' tab so manual
+    edits there reflect on the tracker. Returns: SO, Status_2026, Stage_2026
+    (first non-blank value per SO)."""
+    empty = pd.DataFrame(columns=["SO", "Status_2026", "Stage_2026"])
+    sheet = _open_sheet(sheet_url_or_name, SCOPES)
+    try:
+        rows = sheet.worksheet("2026").get_all_values()
+    except gspread.exceptions.WorksheetNotFound:
+        return empty
+    if len(rows) < 2:
+        return empty
+
+    seen, heads = {}, []
+    for i, h in enumerate(rows[0]):
+        k = h.strip() if h.strip() else f"_col{i}"
+        if k in seen:
+            seen[k] += 1
+            k = f"{k}_{seen[k]}"
+        else:
+            seen[k] = 0
+        heads.append(k)
+
+    d = pd.DataFrame(rows[1:], columns=heads)
+    so_col = "f" if "f" in d.columns else heads[0]
+    d = d.rename(columns={so_col: "SO", "Statues": "Status_2026", "Status Manu": "Stage_2026"})
+    for c in ("Status_2026", "Stage_2026"):
+        if c not in d.columns:
+            d[c] = ""
+    d = d[d["SO"].astype(str).str.strip().astype(bool)]
+    if d.empty:
+        return empty
+
+    def _fnb(s):
+        for x in s:
+            if str(x).strip() and str(x).strip().lower() != "nan":
+                return x
+        return ""
+
+    return (d.groupby("SO")
+             .agg(Status_2026=("Status_2026", _fnb), Stage_2026=("Stage_2026", _fnb))
+             .reset_index())
+
+
 def upsert_order_status(sheet_url_or_name: str,
                         so: str,
                         status: str,

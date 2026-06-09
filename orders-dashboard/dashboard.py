@@ -8,7 +8,8 @@ from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_ta
                      load_tracker_orders, ensure_order_status_tab,
                      load_order_statuses, upsert_order_status,
                      write_production_status, bulk_upsert_order_status,
-                     setup_2026_formula, ensure_config_tab, load_config, save_config)
+                     setup_2026_formula, ensure_config_tab, load_config, save_config,
+                     load_2026_stages)
 
 # ── Admin access — change this password (or set st.secrets["admin_password"]) ──
 ADMIN_PASSWORD = "deci2026"
@@ -453,6 +454,11 @@ def get_tracker_orders(year_2026_only: bool = True, exclude_transport: bool = Tr
 def get_order_statuses() -> pd.DataFrame:
     """Load the 'Order Status' write-back tab (very short TTL — status changes must be fresh)."""
     return load_order_statuses(PROD_SHEET)
+
+
+@st.cache_data(ttl=900)   # 15 min — per-SO Status/Stage typed directly into the 2026 tab
+def get_2026_stages() -> pd.DataFrame:
+    return load_2026_stages(PROD_SHEET)
 
 
 @st.cache_data(ttl=900)   # 15 min (admin saves force-clear immediately)
@@ -1247,6 +1253,18 @@ with tab_tracker:
         tdf["Updated At"] = ""
     tdf["Updated At"] = tdf["Updated At"].fillna("")
 
+    # Manual edits typed directly into the 2026 tab take precedence over the
+    # Order Status tab (fall back to Order Status when the 2026 cell is blank).
+    stages_2026 = get_2026_stages()
+    if not stages_2026.empty:
+        tdf = tdf.merge(stages_2026, on="SO", how="left")
+        for c in ("Status_2026", "Stage_2026"):
+            tdf[c] = tdf[c].fillna("")
+        tdf["Status"] = tdf["Status_2026"].where(
+            tdf["Status_2026"].str.strip() != "", tdf["Status"])
+        tdf["Production Stage"] = tdf["Stage_2026"].where(
+            tdf["Stage_2026"].str.strip() != "", tdf["Production Stage"])
+
     # ── Join SLA driver columns from "Orders Plan " (df = get_data(), preloaded) ─
     def _first_nonblank(s):
         for x in s:
@@ -1453,6 +1471,15 @@ with tab_tracker:
     STAGE_OPTS  = ["", "Assembly", "Cutting", "Final Quality", "Painting",
                    "Painting Prep", "Procurement", "Sponging", "Upholstery",
                    "Veneer Final", "Veneer Internal", "Wood Work", "Completed"]
+
+    # SelectboxColumn errors if a cell value isn't in its options — so extend the
+    # option lists with any values actually present (e.g. alt spellings typed in 2026).
+    def _with_observed(opts, series):
+        extra = sorted({str(v) for v in series.dropna().unique()
+                        if str(v).strip() and str(v) not in opts})
+        return opts + extra
+    STATUS_OPTS = _with_observed(STATUS_OPTS, table_view["Status"]) if "Status" in table_view.columns else STATUS_OPTS
+    STAGE_OPTS  = _with_observed(STAGE_OPTS, table_view["Production Stage"]) if "Production Stage" in table_view.columns else STAGE_OPTS
 
     display_df = fmt_dates(table_view)   # dates → strings; Status/Stage stay as-is
 
