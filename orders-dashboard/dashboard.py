@@ -1453,9 +1453,10 @@ with tab_tracker:
     st.caption(f"{len(view):,} item row(s) across {n_total:,} order(s)  ·  "
                f"Rules editable in ⚙️ Admin · At-risk ≤ {sla_rules['at_risk']}d")
 
-    display_cols = ["SO", "Customer Name", "Order Date", "Item Sku", "Item Name",
-                    "Item Note", "Item QTY", "Order Status", "Status", "Production Stage",
-                    "SLA Basis", "SLA Status", "SLA Countdown", "_deadline_str"]
+    display_cols = ["SO", "Customer Name", "Item Sku", "Item Name",
+                    "Item Note", "Item QTY", "Order Status",
+                    "SLA Status", "SLA Countdown",
+                    "Production Stage", "SLA Basis", "_deadline_str", "Order Date"]
     table_view = view[[c for c in display_cols if c in view.columns]].rename(columns={
         "Item Name":     "Item Description",
         "_deadline_str": "SLA Deadline",
@@ -1495,9 +1496,6 @@ with tab_tracker:
             "Item Note":       st.column_config.TextColumn("Item Note", width="medium"),
             "Item QTY":        st.column_config.NumberColumn("Qty", width="small"),
             "Order Status":    st.column_config.TextColumn("Order Status", width="small"),
-            "Status": st.column_config.SelectboxColumn(
-                "Status", options=STATUS_OPTS, required=False, width="medium",
-            ),
             "Production Stage": st.column_config.SelectboxColumn(
                 "Production Stage", options=STAGE_OPTS, required=False, width="medium",
             ),
@@ -1514,18 +1512,21 @@ with tab_tracker:
         key="tracker_editor",
     )
 
-    # ── Detect changes and offer a single Save button ──────────────────────
-    if "Status" in table_view.columns and "Production Stage" in table_view.columns:
-        orig_s = table_view["Status"].fillna("").reset_index(drop=True)
+    # ── Detect Production Stage changes and offer a single Save button ──────
+    # (Status column is no longer shown/edited; we preserve each SO's existing
+    #  Status when writing so it isn't blanked.)
+    if "Production Stage" in table_view.columns:
         orig_g = table_view["Production Stage"].fillna("").reset_index(drop=True)
-        new_s  = edited["Status"].fillna("").reset_index(drop=True)
         new_g  = edited["Production Stage"].fillna("").reset_index(drop=True)
 
-        changed_mask = (new_s != orig_s) | (new_g != orig_g)
+        changed_mask = (new_g != orig_g)
         changed_sos  = (
             edited[changed_mask.values]
-            .drop_duplicates(subset="SO")[["SO", "Status", "Production Stage"]]
+            .drop_duplicates(subset="SO")[["SO", "Production Stage"]]
         )
+
+        existing_status = (view.drop_duplicates("SO").set_index("SO")["Status"].to_dict()
+                            if "Status" in view.columns else {})
 
         if not changed_sos.empty:
             if st.button(f"💾 Save {len(changed_sos):,} change(s)",
@@ -1537,10 +1538,10 @@ with tab_tracker:
                     def _clean(v):
                         return "" if (v is None or str(v) == "None") else str(v)
 
-                    # Build update map for batch write to 2026
+                    # Preserve existing Status; only Production Stage is edited here.
                     so_updates = {
                         r["SO"]: {
-                            "Status":           _clean(r["Status"]),
+                            "Status":           _clean(existing_status.get(r["SO"], "")),
                             "Production Stage": _clean(r["Production Stage"]),
                         }
                         for _, r in changed_sos.iterrows()
@@ -1554,7 +1555,7 @@ with tab_tracker:
                     for _, r in changed_sos.iterrows():
                         try:
                             upsert_order_status(PROD_SHEET, r["SO"],
-                                                _clean(r["Status"]),
+                                                _clean(existing_status.get(r["SO"], "")),
                                                 _clean(r["Production Stage"]))
                         except Exception as e:
                             errors.append(f"{r['SO']} (status tab): {e}")
