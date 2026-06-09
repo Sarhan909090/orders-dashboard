@@ -1415,6 +1415,20 @@ with tab_tracker:
         else:
             date_filter = ()
 
+        # Server-side sort (keyed → persists across every refresh; the table's own
+        # column-header sort is client-side and would reset on auto-refresh).
+        SORT_OPTIONS = {
+            "SLA urgency (most overdue first)": ("_days_left",   True),
+            "SLA deadline (soonest first)":     ("_deadline",    True),
+            "Order Date (newest first)":        ("Order Date",   False),
+            "Order Date (oldest first)":        ("Order Date",   True),
+            "Customer Name (A–Z)":              ("Customer Name", True),
+            "SO":                               ("SO",           True),
+            "Production Stage":                 ("Production Stage", True),
+        }
+        sc1, _sc2 = st.columns([2, 3])
+        sort_choice = sc1.selectbox("Sort by", list(SORT_OPTIONS.keys()), key="tr_sort")
+
     # Apply filters
     view = tdf.copy()
     if so_filter:
@@ -1431,6 +1445,11 @@ with tab_tracker:
             (view["Order Date"] <= pd.Timestamp(date_filter[1]))
         )
         view = view[mask]
+
+    # Apply the chosen sort (persists across refreshes via the keyed selectbox)
+    _sort_col, _asc = SORT_OPTIONS[sort_choice]
+    if _sort_col in view.columns:
+        view = view.sort_values(_sort_col, ascending=_asc, na_position="last", kind="stable")
 
     # ── Summary KPI strip ──────────────────────────────────────────────────
     n_total    = view["SO"].nunique()
