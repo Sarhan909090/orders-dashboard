@@ -1373,21 +1373,22 @@ with tab_tracker:
 
     # ── Filters ────────────────────────────────────────────────────────────
     with st.expander("🔽 Filters", expanded=True):
-        fc1, fc2, fc3, fc4 = st.columns(4)
+        fc1, fc2, fc3, fc4, fc5 = st.columns(5)
 
-        sla_filter = fc1.multiselect(
+        so_filter = fc1.text_input("Search SO", key="tr_so", placeholder="e.g. S0009011").strip()
+        sla_filter = fc2.multiselect(
             "SLA Status",
             SLA_ORDER,
             default=["Breached", "At Risk"],
             key="tr_sla",
         )
         status_opts = sorted(tdf["Status"].replace("", "— no status —").unique().tolist())
-        status_filter = fc2.multiselect("Order Status", status_opts, key="tr_status")
-        cust_filter   = fc3.text_input("Customer Name", key="tr_cust").strip()
+        status_filter = fc3.multiselect("Order Status", status_opts, key="tr_status")
+        cust_filter   = fc4.text_input("Customer Name", key="tr_cust").strip()
 
         od_vals = tdf["Order Date"].dropna() if "Order Date" in tdf.columns else pd.Series([], dtype="datetime64[ns]")
         if not od_vals.empty:
-            date_filter = fc4.date_input(
+            date_filter = fc5.date_input(
                 "Order Date range",
                 value=(od_vals.max().date() - pd.Timedelta(days=90), od_vals.max().date()),
                 key="tr_date",
@@ -1397,6 +1398,8 @@ with tab_tracker:
 
     # Apply filters
     view = tdf.copy()
+    if so_filter:
+        view = view[view["SO"].str.contains(so_filter, case=False, na=False)]
     if sla_filter:
         view = view[view["SLA Status"].isin(sla_filter)]
     if status_filter:
