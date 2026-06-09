@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
+from streamlit_autorefresh import st_autorefresh
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
                      load_tracker_orders, ensure_order_status_tab,
                      load_order_statuses, upsert_order_status,
@@ -13,6 +14,11 @@ from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_ta
 ADMIN_PASSWORD = "deci2026"
 
 st.set_page_config(page_title="Orders Dashboard", layout="wide")
+
+# Auto-refresh every 60s — silent rerun so new sheet rows surface without clicks.
+# Filters persist (all widgets are keyed); this does NOT clear caches or reset widgets.
+st_autorefresh(interval=60_000, key="auto_refresh")
+
 col_title, col_admin, col_refresh = st.columns([8, 1, 1])
 col_title.title("Orders Dashboard")
 if col_admin.button("⚙️ Admin", help="Open the admin panel"):

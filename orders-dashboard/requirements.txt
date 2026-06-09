@@ -1,4 +1,5 @@
-# redeploy marker: admin panel + config tab (force env rebuild / module reload)
+# redeploy marker: auto-refresh (force env rebuild / module reload)
+streamlit-autorefresh==1.0.1
 altair==6.1.0
 anyio==4.13.0
 attrs==26.1.0
