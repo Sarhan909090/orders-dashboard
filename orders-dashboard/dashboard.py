@@ -1352,6 +1352,10 @@ with tab_tracker:
             _missing_items["Item QTY"] = 0
             tdf = pd.concat([tdf, _missing_items[tdf.columns]], ignore_index=True)
 
+    # After concat, ensure all string/object columns are clean (no stray NaN floats).
+    for _c in tdf.select_dtypes(include="object").columns:
+        tdf[_c] = tdf[_c].fillna("").astype(str)
+
     # Exclude cancelled orders (per Orders Plan Status / CS Updated Date) — toggle
     if _cfg_bool(cfg, "exclude_cancelled", True):
         cancel_mask = tdf.apply(lambda r: _is_canceled(r["op_status"], r["op_cs"]), axis=1)
