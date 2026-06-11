@@ -340,6 +340,77 @@ def load_order_statuses(sheet_url_or_name: str) -> pd.DataFrame:
     return pd.DataFrame(rows[1:], columns=rows[0])
 
 
+def write_production_status_items(sheet_url_or_name: str, item_updates: list) -> int:
+    """Write per-ITEM Status / Production Stage into the '2026' worksheet.
+
+    item_updates: list of dicts {"SO", "Item Sku", "Status"?, "Production Stage"?}.
+    Each dict updates exactly the row matching (SO, Item Sku). If that pair isn't
+    found in 2026 (rare — e.g. new orders not yet mirrored), the update falls back
+    to every row of that SO. Returns the number of cells written.
+    """
+    write_scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds  = _get_creds(write_scopes)
+    client = gspread.authorize(creds)
+    sheet  = client.open_by_url(sheet_url_or_name) if sheet_url_or_name.startswith("http") \
+             else client.open(sheet_url_or_name)
+    ws   = sheet.worksheet("2026")
+    rows = ws.get_all_values()
+    if not rows:
+        return 0
+
+    raw_headers = [h.strip() for h in rows[0]]
+    try:
+        so_col = raw_headers.index("f")
+    except ValueError:
+        raise ValueError("SO column ('f') not found in 2026 worksheet")
+
+    # Item Sku lives in col G (index 6); the header there is blank.
+    sku_col    = 6
+    status_col = raw_headers.index("Statues")     if "Statues"     in raw_headers else None
+    stage_col  = raw_headers.index("Status Manu") if "Status Manu" in raw_headers else None
+
+    item_row_map: dict[tuple, int] = {}
+    so_row_map:   dict[str, list[int]] = {}
+    for i, row in enumerate(rows[1:]):
+        so = row[so_col].strip() if so_col < len(row) else ""
+        if not so:
+            continue
+        sku = row[sku_col].strip() if sku_col < len(row) else ""
+        row_num = i + 2
+        so_row_map.setdefault(so, []).append(row_num)
+        if sku:
+            item_row_map[(so, sku)] = row_num
+
+    def _safe(v):
+        return "" if (v is None or str(v) == "None") else str(v)
+
+    updates = []
+    for u in item_updates:
+        so  = str(u.get("SO", "")).strip()
+        sku = str(u.get("Item Sku", "")).strip()
+        if not so:
+            continue
+        target_rows = [item_row_map[(so, sku)]] if (so, sku) in item_row_map \
+                      else so_row_map.get(so, [])
+        for row_num in target_rows:
+            if "Status" in u and status_col is not None:
+                updates.append({
+                    "range":  gspread.utils.rowcol_to_a1(row_num, status_col + 1),
+                    "values": [[_safe(u["Status"])]],
+                })
+            if "Production Stage" in u and stage_col is not None:
+                updates.append({
+                    "range":  gspread.utils.rowcol_to_a1(row_num, stage_col + 1),
+                    "values": [[_safe(u["Production Stage"])]],
+                })
+    if updates:
+        ws.batch_update(updates)
+    return len(updates)
+
+
 def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
     """Read per-ITEM Status + Production Stage straight from the '2026' tab so manual
     edits there reflect on the tracker at item level. The 2026 'Item Ref' column

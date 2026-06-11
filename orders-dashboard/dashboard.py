@@ -7,7 +7,8 @@ from streamlit_autorefresh import st_autorefresh
 from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_tags,
                      load_tracker_orders, ensure_order_status_tab,
                      load_order_statuses, upsert_order_status,
-                     write_production_status, bulk_upsert_order_status,
+                     write_production_status, write_production_status_items,
+                     bulk_upsert_order_status,
                      setup_2026_formula, ensure_config_tab, load_config, save_config,
                      load_2026_stages)
 
@@ -1545,57 +1546,50 @@ with tab_tracker:
         key="tracker_editor",
     )
 
-    # ── Detect Production Stage changes and offer a single Save button ──────
-    # (Status column is no longer shown/edited; we preserve each SO's existing
-    #  Status when writing so it isn't blanked.)
-    if "Production Stage" in table_view.columns:
+    # ── Detect per-ITEM Production Stage changes and offer a single Save button ─
+    # Per-item: writes target exactly (SO, Item Sku) in the 2026 tab so other
+    # items of the same SO are untouched. The Order Status tab stays SO-level
+    # and is not written from here (it's only used for SO-default fallbacks /
+    # bulk actions). 2026 takes precedence on read.
+    if "Production Stage" in table_view.columns and "Item Sku" in table_view.columns:
         orig_g = table_view["Production Stage"].fillna("").reset_index(drop=True)
         new_g  = edited["Production Stage"].fillna("").reset_index(drop=True)
 
         changed_mask = (new_g != orig_g)
-        changed_sos  = (
-            edited[changed_mask.values]
-            .drop_duplicates(subset="SO")[["SO", "Production Stage"]]
-        )
+        changed_items = edited[changed_mask.values][["SO", "Item Sku", "Production Stage"]].copy()
 
-        existing_status = (view.drop_duplicates("SO").set_index("SO")["Status"].to_dict()
-                            if "Status" in view.columns else {})
-
-        if not changed_sos.empty:
-            if st.button(f"💾 Save {len(changed_sos):,} change(s)",
+        if not changed_items.empty:
+            if st.button(f"💾 Save {len(changed_items):,} change(s)",
                          type="primary", key="tr_save_all"):
                 with st.spinner("Saving…"):
                     errors = []
-                    # Normalise: SelectboxColumn returns Python None for blank option;
-                    # convert to "" so gspread writes an empty cell (not null)
+
                     def _clean(v):
+                        # SelectboxColumn returns None for the blank option; coerce to ""
                         return "" if (v is None or str(v) == "None") else str(v)
 
-                    # Preserve existing Status; only Production Stage is edited here.
-                    so_updates = {
-                        r["SO"]: {
-                            "Status":           _clean(existing_status.get(r["SO"], "")),
+                    item_updates = [
+                        {
+                            "SO":               str(r["SO"]).strip(),
+                            "Item Sku":         str(r["Item Sku"]).strip(),
                             "Production Stage": _clean(r["Production Stage"]),
                         }
-                        for _, r in changed_sos.iterrows()
-                    }
-                    # Write 1: update 2026 sheet (Statues + Status Manu columns)
+                        for _, r in changed_items.iterrows()
+                        if str(r.get("SO", "")).strip()
+                    ]
                     try:
-                        write_production_status(PROD_SHEET, so_updates)
+                        write_production_status_items(PROD_SHEET, item_updates)
                     except Exception as e:
                         errors.append(f"2026 sheet write failed: {e}")
-                    # Write 2: upsert Order Status tab (tracker's read-back store)
-                    for _, r in changed_sos.iterrows():
-                        try:
-                            upsert_order_status(PROD_SHEET, r["SO"],
-                                                _clean(existing_status.get(r["SO"], "")),
-                                                _clean(r["Production Stage"]))
-                        except Exception as e:
-                            errors.append(f"{r['SO']} (status tab): {e}")
+
                 if errors:
                     st.error("Some saves failed:\n" + "\n".join(errors))
                 else:
-                    st.success(f"Saved {len(changed_sos):,} order(s). Refreshing…")
+                    n_so = changed_items["SO"].nunique()
+                    st.success(
+                        f"Saved {len(changed_items):,} item change(s) across "
+                        f"{n_so:,} order(s). Refreshing…"
+                    )
                     st.cache_data.clear()
                     st.rerun()
 
