@@ -1315,12 +1315,22 @@ with tab_tracker:
         ]
     )
     _missing_project = _project_in_plan - set(tdf["SO"])
+    def _fill_missing_cols(src: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
+        """Add any columns present in ref but missing from src, using type-safe defaults."""
+        for _col in ref.columns:
+            if _col not in src.columns:
+                if pd.api.types.is_datetime64_any_dtype(ref[_col].dtype):
+                    src[_col] = pd.NaT
+                elif ref[_col].dtype == object:
+                    src[_col] = ""
+                else:
+                    src[_col] = np.nan
+        return src
+
     if _missing_project:
         _phantom = op_lookup[op_lookup["SO"].isin(_missing_project)].copy()
         _phantom["Customer Name"] = _phantom["SO"].map(_cust_map).fillna("")
-        for _col in tdf.columns:
-            if _col not in _phantom.columns:
-                _phantom[_col] = "" if tdf[_col].dtype == object else np.nan
+        _phantom = _fill_missing_cols(_phantom, tdf)
         _phantom["Item QTY"] = 0
         tdf = pd.concat([tdf, _phantom[tdf.columns]], ignore_index=True)
 
@@ -1338,9 +1348,7 @@ with tab_tracker:
             _missing_items["Customer Name"] = _missing_items["SO"].map(_cust_map).fillna("")
             _missing_items["Production Stage"] = _missing_items["Stage_2026"].fillna("")
             _missing_items["Status"] = _missing_items["Status_2026"].fillna("")
-            for _col in tdf.columns:
-                if _col not in _missing_items.columns:
-                    _missing_items[_col] = "" if tdf[_col].dtype == object else np.nan
+            _missing_items = _fill_missing_cols(_missing_items, tdf)
             _missing_items["Item QTY"] = 0
             tdf = pd.concat([tdf, _missing_items[tdf.columns]], ignore_index=True)
 
