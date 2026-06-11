@@ -1270,23 +1270,6 @@ with tab_tracker:
         tdf = tdf.merge(stages_2026, on=["SO", "Item Sku"], how="left")
         for c in ("Status_2026", "Stage_2026"):
             tdf[c] = tdf[c].fillna("")
-        # Prefix-match fallback: when a Data-per-order SKU like "02VINE01-T : 02VINE01-ER-04"
-        # has no exact match in stages_2026 but "02VINE01-T" does, use that stage.
-        _no_stage = (tdf["Stage_2026"] == "") & tdf["Item Sku"].str.strip().astype(bool)
-        if _no_stage.any():
-            _s26_by_so = {so: grp for so, grp in stages_2026.groupby("SO")}
-            def _prefix_stage(row):
-                cands = _s26_by_so.get(row["SO"])
-                if cands is None:
-                    return pd.Series({"Stage_2026": "", "Status_2026": ""})
-                sku = str(row["Item Sku"]).strip()
-                for _, c in cands.iterrows():
-                    if c["Item Sku"] and sku.startswith(c["Item Sku"]):
-                        return pd.Series({"Stage_2026": c["Stage_2026"], "Status_2026": c["Status_2026"]})
-                return pd.Series({"Stage_2026": "", "Status_2026": ""})
-            _filled = tdf[_no_stage].apply(_prefix_stage, axis=1)
-            tdf.loc[_no_stage, "Stage_2026"]  = _filled["Stage_2026"].values
-            tdf.loc[_no_stage, "Status_2026"] = _filled["Status_2026"].values
         tdf["Status"] = tdf["Status_2026"].where(
             tdf["Status_2026"].str.strip() != "", tdf["Status"])
         tdf["Production Stage"] = tdf["Stage_2026"].where(
