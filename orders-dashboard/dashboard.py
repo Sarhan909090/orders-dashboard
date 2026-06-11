@@ -1348,20 +1348,10 @@ with tab_tracker:
         _rows_2026 = _rows_2026[
             ~_rows_2026["Item Sku"].str.lower().eq("transportation")
         ]
-        _tdf_pairs      = set(zip(tdf["SO"], tdf["Item Sku"].fillna("")))
-        _tdf_name_pairs = set(zip(
-            tdf["SO"],
-            tdf["Item Name"].fillna("") if "Item Name" in tdf.columns else pd.Series("", index=tdf.index),
-        ))
+        _tdf_pairs = set(zip(tdf["SO"], tdf["Item Sku"].fillna("")))
 
         def _is_present(r):
-            sku = r["Item Sku"]
-            if sku:               # non-blank SKU → match on (SO, Item Sku)
-                return (r["SO"], sku) in _tdf_pairs
-            name = r["Item Name"]
-            if name:              # blank SKU, non-blank name → match on (SO, Item Name)
-                return (r["SO"], name) in _tdf_name_pairs
-            return True           # both blank → skip (useless row)
+            return (r["SO"], r["Item Sku"]) in _tdf_pairs
 
         _missing_items = _rows_2026[~_rows_2026.apply(_is_present, axis=1)].copy()
         if not _missing_items.empty:
