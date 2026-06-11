@@ -1349,9 +1349,19 @@ with tab_tracker:
             ~_rows_2026["Item Sku"].str.lower().eq("transportation")
         ]
         _tdf_pairs = set(zip(tdf["SO"], tdf["Item Sku"].fillna("")))
+        # Build per-SO sku sets for prefix matching (e.g. "02VINE01-T" covers
+        # "02VINE01-T : 02VINE01-ER-04" that already exists in Data per order)
+        _tdf_so_skus: dict = {}
+        for _so, _sk in _tdf_pairs:
+            _tdf_so_skus.setdefault(_so, set()).add(_sk)
 
         def _is_present(r):
-            return (r["SO"], r["Item Sku"]) in _tdf_pairs
+            so, sku = r["SO"], r["Item Sku"]
+            if (so, sku) in _tdf_pairs:
+                return True
+            if sku and so in _tdf_so_skus:
+                return any(ts.startswith(sku) for ts in _tdf_so_skus[so])
+            return False
 
         _missing_items = _rows_2026[~_rows_2026.apply(_is_present, axis=1)].copy()
         if not _missing_items.empty:
