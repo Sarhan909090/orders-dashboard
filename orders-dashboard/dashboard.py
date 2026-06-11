@@ -10,7 +10,7 @@ from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_ta
                      write_production_status, write_production_status_items,
                      bulk_upsert_order_status,
                      setup_2026_formula, ensure_config_tab, load_config, save_config,
-                     load_2026_stages)
+                     load_2026_stages, load_2026_item_rows)
 
 # ── Admin access — change this password (or set st.secrets["admin_password"]) ──
 ADMIN_PASSWORD = "deci2026"
@@ -463,6 +463,11 @@ def get_order_statuses() -> pd.DataFrame:
 @st.cache_data(ttl=900)   # 15 min — per-SO Status/Stage typed directly into the 2026 tab
 def get_2026_stages() -> pd.DataFrame:
     return load_2026_stages(PROD_SHEET)
+
+
+@st.cache_data(ttl=900)   # 15 min — individual rows from the 2026 tab (for supplement)
+def get_2026_item_rows() -> pd.DataFrame:
+    return load_2026_item_rows(PROD_SHEET)
 
 
 @st.cache_data(ttl=900)   # 15 min (admin saves force-clear immediately)
@@ -1335,19 +1340,37 @@ with tab_tracker:
         tdf = pd.concat([tdf, _phantom[tdf.columns]], ignore_index=True)
 
     # Items tracked in the 2026 tab but absent from "Data per order" are also
-    # invisible. Supplement tdf so the two tabs stay effectively in sync.
-    if not stages_2026.empty and "Item Sku" in tdf.columns:
-        _tdf_pairs = set(zip(tdf["SO"], tdf["Item Sku"].fillna("")))
-        _missing_items = stages_2026[
-            ~stages_2026.apply(
-                lambda r: (r["SO"], str(r["Item Sku"]).strip()) in _tdf_pairs, axis=1
-            )
-        ].copy()
+    # invisible. Per-row read (no groupby) preserves blank-sku rows individually
+    # via Item Name so manually-added rows without a col-G SKU still appear.
+    _rows_2026 = get_2026_item_rows()
+    if not _rows_2026.empty and "Item Sku" in tdf.columns:
+        # Mirror the exclude_transport filter applied to tracker_orders
+        _rows_2026 = _rows_2026[
+            ~_rows_2026["Item Sku"].str.lower().eq("transportation")
+        ]
+        _tdf_pairs      = set(zip(tdf["SO"], tdf["Item Sku"].fillna("")))
+        _tdf_name_pairs = set(zip(
+            tdf["SO"],
+            tdf["Item Name"].fillna("") if "Item Name" in tdf.columns else pd.Series("", index=tdf.index),
+        ))
+
+        def _is_present(r):
+            sku = r["Item Sku"]
+            if sku:               # non-blank SKU → match on (SO, Item Sku)
+                return (r["SO"], sku) in _tdf_pairs
+            name = r["Item Name"]
+            if name:              # blank SKU, non-blank name → match on (SO, Item Name)
+                return (r["SO"], name) in _tdf_name_pairs
+            return True           # both blank → skip (useless row)
+
+        _missing_items = _rows_2026[~_rows_2026.apply(_is_present, axis=1)].copy()
         if not _missing_items.empty:
             _missing_items = _missing_items.merge(op_lookup, on="SO", how="left")
-            _missing_items["Customer Name"] = _missing_items["SO"].map(_cust_map).fillna("")
+            _missing_items["Customer Name"]    = _missing_items["SO"].map(_cust_map).fillna("")
             _missing_items["Production Stage"] = _missing_items["Stage_2026"].fillna("")
-            _missing_items["Status"] = _missing_items["Status_2026"].fillna("")
+            _missing_items["Status"]           = _missing_items["Status_2026"].fillna("")
+            if "Item Name" in tdf.columns:
+                _missing_items["Item Name"] = _missing_items["Item Name"].fillna("")
             _missing_items = _fill_missing_cols(_missing_items, tdf)
             _missing_items["Item QTY"] = 0
             tdf = pd.concat([tdf, _missing_items[tdf.columns]], ignore_index=True)

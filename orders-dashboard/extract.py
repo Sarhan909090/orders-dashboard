@@ -460,6 +460,46 @@ def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
              .reset_index())
 
 
+def load_2026_item_rows(sheet_url_or_name: str) -> pd.DataFrame:
+    """Return one row per physical row in the '2026' tab (no aggregation).
+    Columns: SO, Item Sku (col G — may be blank), Item Name (col H),
+             Status_2026, Stage_2026."""
+    empty = pd.DataFrame(columns=["SO", "Item Sku", "Item Name", "Status_2026", "Stage_2026"])
+    sheet = _open_sheet(sheet_url_or_name, SCOPES)
+    try:
+        rows = sheet.worksheet("2026").get_all_values()
+    except gspread.exceptions.WorksheetNotFound:
+        return empty
+    if len(rows) < 2:
+        return empty
+
+    seen, heads = {}, []
+    for i, h in enumerate(rows[0]):
+        k = h.strip() if h.strip() else f"_col{i}"
+        if k in seen:
+            seen[k] += 1
+            k = f"{k}_{seen[k]}"
+        else:
+            seen[k] = 0
+        heads.append(k)
+
+    d = pd.DataFrame(rows[1:], columns=heads)
+    so_col   = "f"     if "f"     in d.columns else heads[0]
+    sku_col  = "_col6" if "_col6" in d.columns else (heads[6] if len(heads) > 6 else None)
+    name_col = "_col7" if "_col7" in d.columns else (heads[7] if len(heads) > 7 else None)
+    ren = {so_col: "SO", "Statues": "Status_2026", "Status Manu": "Stage_2026"}
+    if sku_col:  ren[sku_col]  = "Item Sku"
+    if name_col: ren[name_col] = "Item Name"
+    d = d.rename(columns=ren)
+    for c in ("Item Sku", "Item Name", "Status_2026", "Stage_2026"):
+        if c not in d.columns:
+            d[c] = ""
+    d["Item Sku"]  = d["Item Sku"].astype(str).str.strip()
+    d["Item Name"] = d["Item Name"].astype(str).str.strip()
+    d = d[d["SO"].astype(str).str.strip().astype(bool)].reset_index(drop=True)
+    return d[["SO", "Item Sku", "Item Name", "Status_2026", "Stage_2026"]]
+
+
 def upsert_order_status(sheet_url_or_name: str,
                         so: str,
                         status: str,
