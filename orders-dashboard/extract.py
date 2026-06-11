@@ -227,7 +227,7 @@ def setup_2026_formula(sheet_url_or_name: str) -> int:
     Finds the last row in column A that has a non-empty SO, then writes formula
     cells at anchor = last_row + 2 (one blank separator row in between).
 
-    FILTER formulas pull every column from 'Copy of Data per order' that isn't
+    FILTER formulas pull every column from 'Data per order' that isn't
     already in '2026' rows 2–last_row.
     VLOOKUP formulas in cols D and E pull Status / Production Stage from the
     'Order Status' tab so tracker saves appear automatically in '2026'.
@@ -248,24 +248,24 @@ def setup_2026_formula(sheet_url_or_name: str) -> int:
     r = anchor                         # shorthand
     # FILTER condition: non-empty SO in source AND not already in existing 2026 rows
     cond = (
-        f"('Copy of Data per order'!A2:A<>\"\")"
-        f"*NOT(COUNTIF('2026'!$A$2:$A${last_so_row},'Copy of Data per order'!A2:A))"
+        f"('Data per order'!A2:A<>\"\")"
+        f"*NOT(COUNTIF('2026'!$A$2:$A${last_so_row},'Data per order'!A2:A))"
     )
 
     formulas = {
-        f"A{r}": f"=FILTER('Copy of Data per order'!A2:A,{cond})",
-        f"B{r}": f"=FILTER(TEXT('Copy of Data per order'!B2:B,\"D-MMM\"),{cond})",
-        f"C{r}": f"=FILTER('Copy of Data per order'!C2:C,{cond})",
+        f"A{r}": f"=FILTER('Data per order'!A2:A,{cond})",
+        f"B{r}": f"=FILTER(TEXT('Data per order'!B2:B,\"D-MMM\"),{cond})",
+        f"C{r}": f"=FILTER('Data per order'!C2:C,{cond})",
         # D = Status (VLOOKUP from Order Status tab)
         f"D{r}": f"=ARRAYFORMULA(IF(A{r}:A=\"\",\"\",IFERROR(VLOOKUP(A{r}:A,'Order Status'!$A:$B,2,0),\"\")))",
         # E = Production Stage (VLOOKUP from Order Status tab)
         f"E{r}": f"=ARRAYFORMULA(IF(A{r}:A=\"\",\"\",IFERROR(VLOOKUP(A{r}:A,'Order Status'!$A:$C,3,0),\"\")))",
-        f"F{r}": f"=FILTER('Copy of Data per order'!E2:E,{cond})",   # Order Status
-        f"G{r}": f"=FILTER('Copy of Data per order'!F2:F,{cond})",   # Item Sku
-        f"H{r}": f"=FILTER('Copy of Data per order'!G2:G,{cond})",   # Item Name → Descreption
-        f"I{r}": f"=FILTER('Copy of Data per order'!H2:H,{cond})",   # QTY
-        f"J{r}": f"=FILTER('Copy of Data per order'!I2:I,{cond})",   # Item Note
-        f"R{r}": f"=FILTER('Copy of Data per order'!K2:K,{cond})",   # Order Class
+        f"F{r}": f"=FILTER('Data per order'!E2:E,{cond})",   # Order Status
+        f"G{r}": f"=FILTER('Data per order'!F2:F,{cond})",   # Item Sku
+        f"H{r}": f"=FILTER('Data per order'!G2:G,{cond})",   # Item Name → Descreption
+        f"I{r}": f"=FILTER('Data per order'!H2:H,{cond})",   # QTY
+        f"J{r}": f"=FILTER('Data per order'!I2:I,{cond})",   # Item Note
+        f"R{r}": f"=FILTER('Data per order'!K2:K,{cond})",   # Order Class
     }
 
     for cell, formula in formulas.items():
@@ -291,12 +291,12 @@ def _open_sheet(sheet_url_or_name: str, scopes):
 
 
 def load_tracker_orders(sheet_url_or_name: str) -> pd.DataFrame:
-    """Read 'Copy of Data per order' and return a clean tracker DataFrame.
+    """Read 'Data per order' and return a clean tracker DataFrame.
     Columns: SO, Order Date, Customer Name, Order Status,
              Item Sku, Item Name, Item QTY, Item Note,
              Picking Ship Date, Order Ship Date, Order Class."""
     sheet = _open_sheet(sheet_url_or_name, SCOPES)
-    ws    = sheet.worksheet("Copy of Data per order")
+    ws    = sheet.worksheet("Data per order")
     rows  = ws.get_all_values()
     if len(rows) < 2:
         return pd.DataFrame()
@@ -414,7 +414,7 @@ def write_production_status_items(sheet_url_or_name: str, item_updates: list) ->
 def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
     """Read per-ITEM Status + Production Stage straight from the '2026' tab so manual
     edits there reflect on the tracker at item level. The 2026 'Item Ref' column
-    (blank header, col G) holds the Item Sku, which matches 'Copy of Data per order'.
+    (blank header, col G) holds the Item Sku, which matches 'Data per order'.
     Returns: SO, Item Sku, Status_2026, Stage_2026 (first non-blank per SO+Sku)."""
     empty = pd.DataFrame(columns=["SO", "Item Sku", "Status_2026", "Stage_2026"])
     sheet = _open_sheet(sheet_url_or_name, SCOPES)

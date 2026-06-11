@@ -1235,7 +1235,7 @@ with tab_tracker:
     tracker_statuses = get_order_statuses()
 
     if tracker_orders.empty:
-        st.warning("No orders found in 'Copy of Data per order'.")
+        st.warning("No orders found in 'Data per order'.")
         st.stop()
 
     # ── Merge status into orders ───────────────────────────────────────────
@@ -1303,6 +1303,47 @@ with tab_tracker:
     for c in ["op_status", "op_plan", "op_cs", "op_ft"]:
         tdf[c] = tdf[c].fillna("")
 
+    # Shared customer-name lookup used by both supplement blocks below.
+    _cust_map = (df[["SO", "Customer Name"]]
+                 .drop_duplicates("SO").set_index("SO")["Customer Name"])
+
+    # Project SOs that exist in Orders Plan but have no rows in "Data per order"
+    # are invisible after the left-join above. Append a placeholder row for each.
+    _project_in_plan = set(
+        op_lookup.loc[
+            op_lookup["op_plan"].astype(str).str.strip().str.lower() == "project", "SO"
+        ]
+    )
+    _missing_project = _project_in_plan - set(tdf["SO"])
+    if _missing_project:
+        _phantom = op_lookup[op_lookup["SO"].isin(_missing_project)].copy()
+        _phantom["Customer Name"] = _phantom["SO"].map(_cust_map).fillna("")
+        for _col in tdf.columns:
+            if _col not in _phantom.columns:
+                _phantom[_col] = "" if tdf[_col].dtype == object else np.nan
+        _phantom["Item QTY"] = 0
+        tdf = pd.concat([tdf, _phantom[tdf.columns]], ignore_index=True)
+
+    # Items tracked in the 2026 tab but absent from "Data per order" are also
+    # invisible. Supplement tdf so the two tabs stay effectively in sync.
+    if not stages_2026.empty and "Item Sku" in tdf.columns:
+        _tdf_pairs = set(zip(tdf["SO"], tdf["Item Sku"].fillna("")))
+        _missing_items = stages_2026[
+            ~stages_2026.apply(
+                lambda r: (r["SO"], str(r["Item Sku"]).strip()) in _tdf_pairs, axis=1
+            )
+        ].copy()
+        if not _missing_items.empty:
+            _missing_items = _missing_items.merge(op_lookup, on="SO", how="left")
+            _missing_items["Customer Name"] = _missing_items["SO"].map(_cust_map).fillna("")
+            _missing_items["Production Stage"] = _missing_items["Stage_2026"].fillna("")
+            _missing_items["Status"] = _missing_items["Status_2026"].fillna("")
+            for _col in tdf.columns:
+                if _col not in _missing_items.columns:
+                    _missing_items[_col] = "" if tdf[_col].dtype == object else np.nan
+            _missing_items["Item QTY"] = 0
+            tdf = pd.concat([tdf, _missing_items[tdf.columns]], ignore_index=True)
+
     # Exclude cancelled orders (per Orders Plan Status / CS Updated Date) — toggle
     if _cfg_bool(cfg, "exclude_cancelled", True):
         cancel_mask = tdf.apply(lambda r: _is_canceled(r["op_status"], r["op_cs"]), axis=1)
@@ -1346,6 +1387,7 @@ with tab_tracker:
     # "Project" plan → no SLA, just a running day count (never breaches)
     tdf["_is_project"] = tdf["op_plan"].astype(str).str.strip().str.lower() == "project"
     tdf["_days_running"] = (today_ts - order_dt).dt.days
+    tdf["_days_to_completion"] = (ref_date - order_dt).dt.days
 
     _plan_weeks = sla_rules["plan_weeks"]
     _at_risk    = sla_rules["at_risk"]
@@ -1366,10 +1408,10 @@ with tab_tracker:
     tdf["SLA Basis"] = tdf.apply(_sla_basis, axis=1)
 
     def _sla_status(row):
+        if row["_is_project"]:                   # Project plan → always "Project" (even when completed)
+            return "Project"
         if row["_completed"]:                    # Status or Production Stage = Completed
             return "Done"
-        if row["_is_project"]:                   # Project plan → no SLA, just counting
-            return "Project"
         if pd.isna(row["_days_left"]):
             return "No SLA"
         if row["_days_left"] < 0:
@@ -1383,6 +1425,9 @@ with tab_tracker:
         if r["SLA Status"] == "Project":
             dr = r["_days_running"]
             return f"{int(dr)}d running" if pd.notna(dr) else "—"
+        if r["_is_project"] and r["_completed"]:
+            days = r["_days_to_completion"]
+            return f"{int(days)}d" if pd.notna(days) else "—"
         d = r["_days_left"]
         if r["SLA Status"] == "No SLA" or pd.isna(d):
             return "—"
