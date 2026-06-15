@@ -1636,7 +1636,8 @@ with tab_tracker:
         new_g  = edited["Production Stage"].fillna("").reset_index(drop=True)
 
         changed_mask = (new_g != orig_g)
-        changed_items = edited[changed_mask.values][["SO", "Item Sku", "Production Stage"]].copy()
+        _extra_cols = [c for c in ["Item Name"] if c in edited.columns]
+        changed_items = edited[changed_mask.values][["SO", "Item Sku", "Production Stage"] + _extra_cols].copy()
 
         if not changed_items.empty:
             if st.button(f"💾 Save {len(changed_items):,} change(s)",
@@ -1652,6 +1653,7 @@ with tab_tracker:
                         {
                             "SO":               str(r["SO"]).strip(),
                             "Item Sku":         str(r["Item Sku"]).strip(),
+                            "Item Name":        str(r.get("Item Name", "")).strip(),
                             "Production Stage": _clean(r["Production Stage"]),
                         }
                         for _, r in changed_items.iterrows()

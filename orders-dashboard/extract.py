@@ -343,10 +343,12 @@ def load_order_statuses(sheet_url_or_name: str) -> pd.DataFrame:
 def write_production_status_items(sheet_url_or_name: str, item_updates: list) -> int:
     """Write per-ITEM Status / Production Stage into the '2026' worksheet.
 
-    item_updates: list of dicts {"SO", "Item Sku", "Status"?, "Production Stage"?}.
-    Each dict updates exactly the row matching (SO, Item Sku). If that pair isn't
-    found in 2026 (rare — e.g. new orders not yet mirrored), the update falls back
-    to every row of that SO. Returns the number of cells written.
+    item_updates: list of dicts {"SO", "Item Sku", "Item Name"?, "Status"?, "Production Stage"?}.
+    Lookup priority:
+      1. Exact (SO, Item Sku) match in col G.
+      2. For blank-sku rows: (SO, Item Name) match in col H.
+      3. No match → skip (never writes to the whole SO).
+    Returns the number of cells written.
     """
     write_scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -367,22 +369,25 @@ def write_production_status_items(sheet_url_or_name: str, item_updates: list) ->
     except ValueError:
         raise ValueError("SO column ('f') not found in 2026 worksheet")
 
-    # Item Sku lives in col G (index 6); the header there is blank.
+    # Item Sku lives in col G (index 6); Item Name in col H (index 7). Headers blank.
     sku_col    = 6
+    name_col   = 7
     status_col = raw_headers.index("Statues")     if "Statues"     in raw_headers else None
     stage_col  = raw_headers.index("Status Manu") if "Status Manu" in raw_headers else None
 
-    item_row_map: dict[tuple, int] = {}
-    so_row_map:   dict[str, list[int]] = {}
+    item_row_map:  dict[tuple, int] = {}   # (SO, Item Sku)  → row number
+    item_name_map: dict[tuple, int] = {}   # (SO, Item Name) → row number (blank-sku rows)
     for i, row in enumerate(rows[1:]):
         so = row[so_col].strip() if so_col < len(row) else ""
         if not so:
             continue
-        sku = row[sku_col].strip() if sku_col < len(row) else ""
+        sku  = row[sku_col].strip()  if sku_col  < len(row) else ""
+        name = row[name_col].strip() if name_col < len(row) else ""
         row_num = i + 2
-        so_row_map.setdefault(so, []).append(row_num)
         if sku:
             item_row_map[(so, sku)] = row_num
+        elif name:
+            item_name_map[(so, name)] = row_num
 
     def _safe(v):
         return "" if (v is None or str(v) == "None") else str(v)
@@ -393,8 +398,13 @@ def write_production_status_items(sheet_url_or_name: str, item_updates: list) ->
         sku = str(u.get("Item Sku", "")).strip()
         if not so:
             continue
-        target_rows = [item_row_map[(so, sku)]] if (so, sku) in item_row_map \
-                      else so_row_map.get(so, [])
+        if (so, sku) in item_row_map:
+            target_rows = [item_row_map[(so, sku)]]
+        elif not sku:
+            item_name = str(u.get("Item Name", "")).strip()
+            target_rows = [item_name_map[(so, item_name)]] if (so, item_name) in item_name_map else []
+        else:
+            target_rows = []   # non-blank sku not in 2026 → skip, never blast whole SO
         for row_num in target_rows:
             if "Status" in u and status_col is not None:
                 updates.append({
