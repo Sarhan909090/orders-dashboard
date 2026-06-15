@@ -1268,10 +1268,15 @@ with tab_tracker:
     stages_2026 = get_2026_stages()
     if not stages_2026.empty and "Item Sku" in tdf.columns:
         # Join on a per-item match key (SO+Sku, or SO+ItemName for blank-sku rows)
-        # so skuless items in the same SO stay independent.
+        # so skuless items in the same SO stay independent. Compute the key on BOTH
+        # frames here (rather than relying on the cached frame carrying it) so a
+        # stale cache from an older code version can't break the merge.
+        _s26 = stages_2026.copy()
+        _s26["_mkey"] = mkey_2026(_s26)
+        _s26 = _s26.drop_duplicates("_mkey", keep="first")
         tdf["_mkey"] = mkey_2026(tdf)
         tdf = tdf.merge(
-            stages_2026[["_mkey", "Status_2026", "Stage_2026"]], on="_mkey", how="left")
+            _s26[["_mkey", "Status_2026", "Stage_2026"]], on="_mkey", how="left")
         tdf.drop(columns="_mkey", inplace=True)
         for c in ("Status_2026", "Stage_2026"):
             tdf[c] = tdf[c].fillna("")
