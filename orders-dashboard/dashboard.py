@@ -10,7 +10,7 @@ from extract import (load_orders, load_unit_counts, load_dot_items, write_dot_ta
                      write_production_status, write_production_status_items,
                      bulk_upsert_order_status,
                      setup_2026_formula, ensure_config_tab, load_config, save_config,
-                     load_2026_stages, load_2026_item_rows)
+                     load_2026_stages, load_2026_item_rows, mkey_2026)
 
 # ── Admin access — change this password (or set st.secrets["admin_password"]) ──
 ADMIN_PASSWORD = "deci2026"
@@ -1267,7 +1267,12 @@ with tab_tracker:
     # Joined on SO + Item Sku so each item shows its own stage.
     stages_2026 = get_2026_stages()
     if not stages_2026.empty and "Item Sku" in tdf.columns:
-        tdf = tdf.merge(stages_2026, on=["SO", "Item Sku"], how="left")
+        # Join on a per-item match key (SO+Sku, or SO+ItemName for blank-sku rows)
+        # so skuless items in the same SO stay independent.
+        tdf["_mkey"] = mkey_2026(tdf)
+        tdf = tdf.merge(
+            stages_2026[["_mkey", "Status_2026", "Stage_2026"]], on="_mkey", how="left")
+        tdf.drop(columns="_mkey", inplace=True)
         for c in ("Status_2026", "Stage_2026"):
             tdf[c] = tdf[c].fillna("")
         tdf["Status"] = tdf["Status_2026"].where(

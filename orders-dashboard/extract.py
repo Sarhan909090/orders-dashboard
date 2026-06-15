@@ -411,14 +411,11 @@ def write_production_status_items(sheet_url_or_name: str, item_updates: list) ->
                     "range":  gspread.utils.rowcol_to_a1(row_num, status_col + 1),
                     "values": [[_safe(u["Status"])]],
                 })
-            if "Production Stage" in u:
-                # Write to col K (index 10, 1-based = 11) — a plain non-formula column.
-                # Cols D/E ("Statues"/"Status Manu") are ARRAYFORMULA VLOOKUPs from the
-                # Order Status tab keyed by SO, so any value written there gets overridden
-                # on the next sheet recalculation, making all items of the same SO appear
-                # identical. Col K has no formula and persists per-item writes permanently.
+            if "Production Stage" in u and stage_col is not None:
+                # Col E "Status Manu" is a plain dropdown (no formula), so per-row
+                # writes persist independently of other items in the same SO.
                 updates.append({
-                    "range":  gspread.utils.rowcol_to_a1(row_num, 11),
+                    "range":  gspread.utils.rowcol_to_a1(row_num, stage_col + 1),
                     "values": [[_safe(u["Production Stage"])]],
                 })
     if updates:
@@ -451,28 +448,28 @@ def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
         heads.append(k)
 
     d = pd.DataFrame(rows[1:], columns=heads)
-    so_col  = "f" if "f" in d.columns else heads[0]
-    sku_col = "_col6" if "_col6" in d.columns else (heads[6] if len(heads) > 6 else None)
-    # Col K (index 10) is the dedicated per-item Stage override — plain cells, no formula.
-    # Col E ("Status Manu") is an ARRAYFORMULA VLOOKUP from Order Status by SO, so it is
-    # SO-level (all items of an SO share the same value). Col K takes priority; fall back
-    # to col E when col K is blank (i.e. the item was never explicitly set per-item).
-    k_col   = "_col10" if "_col10" in d.columns else (heads[10] if len(heads) > 10 else None)
-    ren = {so_col: "SO", "Statues": "Status_2026", "Status Manu": "_stage_so"}
+    so_col   = "f"     if "f"     in d.columns else heads[0]
+    sku_col  = "_col6" if "_col6" in d.columns else (heads[6] if len(heads) > 6 else None)
+    name_col = "_col7" if "_col7" in d.columns else (heads[7] if len(heads) > 7 else None)
+    ren = {so_col: "SO", "Statues": "Status_2026", "Status Manu": "Stage_2026"}
     if sku_col:
         ren[sku_col] = "Item Sku"
-    if k_col:
-        ren[k_col] = "_stage_item"
+    if name_col:
+        ren[name_col] = "Item Name"
     d = d.rename(columns=ren)
-    for c in ("Item Sku", "Status_2026", "_stage_so", "_stage_item"):
+    for c in ("Item Sku", "Item Name", "Status_2026", "Stage_2026"):
         if c not in d.columns:
             d[c] = ""
-    # Per-item col K wins; fall back to SO-level col E
-    d["Stage_2026"] = d["_stage_item"].where(
-        d["_stage_item"].astype(str).str.strip() != "", d["_stage_so"])
+    d["Item Sku"]  = d["Item Sku"].astype(str).str.strip()
+    d["Item Name"] = d["Item Name"].astype(str).str.strip()
     d = d[d["SO"].astype(str).str.strip().astype(bool)]
     if d.empty:
         return empty
+
+    # Match key: non-blank SKU rows key on (SO, Item Sku); blank-SKU rows key on
+    # (SO, Item Name) so two skuless items in the same SO stay independent
+    # instead of collapsing into one (SO, "") group.
+    d["_mkey"] = mkey_2026(d)
 
     def _fnb(s):
         for x in s:
@@ -480,9 +477,27 @@ def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
                 return x
         return ""
 
-    return (d.groupby(["SO", "Item Sku"])
-             .agg(Status_2026=("Status_2026", _fnb), Stage_2026=("Stage_2026", _fnb))
-             .reset_index())
+    grouped = d.groupby("_mkey").agg({
+        "SO":          "first",
+        "Item Sku":    "first",
+        "Item Name":   "first",
+        "Status_2026": _fnb,
+        "Stage_2026":  _fnb,
+    }).reset_index()
+    return grouped
+
+
+def mkey_2026(df: pd.DataFrame) -> pd.Series:
+    """Build the per-item match key used to join the 2026 tab to the tracker.
+    Non-blank Item Sku → 'SO\\x01<sku>'; blank Item Sku → 'SO\\x01\\x02<Item Name>'.
+    Both the 2026 frame and the tracker frame must use this so blank-sku items
+    match by description and never collapse SO-wide."""
+    so   = df["SO"].astype(str).str.strip()
+    sku  = df["Item Sku"].fillna("").astype(str).str.strip() if "Item Sku" in df.columns \
+           else pd.Series("", index=df.index)
+    name = df["Item Name"].fillna("").astype(str).str.strip() if "Item Name" in df.columns \
+           else pd.Series("", index=df.index)
+    return so + "\x01" + sku.where(sku != "", "\x02" + name)
 
 
 def load_2026_item_rows(sheet_url_or_name: str) -> pd.DataFrame:
