@@ -411,9 +411,14 @@ def write_production_status_items(sheet_url_or_name: str, item_updates: list) ->
                     "range":  gspread.utils.rowcol_to_a1(row_num, status_col + 1),
                     "values": [[_safe(u["Status"])]],
                 })
-            if "Production Stage" in u and stage_col is not None:
+            if "Production Stage" in u:
+                # Write to col K (index 10, 1-based = 11) — a plain non-formula column.
+                # Cols D/E ("Statues"/"Status Manu") are ARRAYFORMULA VLOOKUPs from the
+                # Order Status tab keyed by SO, so any value written there gets overridden
+                # on the next sheet recalculation, making all items of the same SO appear
+                # identical. Col K has no formula and persists per-item writes permanently.
                 updates.append({
-                    "range":  gspread.utils.rowcol_to_a1(row_num, stage_col + 1),
+                    "range":  gspread.utils.rowcol_to_a1(row_num, 11),
                     "values": [[_safe(u["Production Stage"])]],
                 })
     if updates:
@@ -448,13 +453,23 @@ def load_2026_stages(sheet_url_or_name: str) -> pd.DataFrame:
     d = pd.DataFrame(rows[1:], columns=heads)
     so_col  = "f" if "f" in d.columns else heads[0]
     sku_col = "_col6" if "_col6" in d.columns else (heads[6] if len(heads) > 6 else None)
-    ren = {so_col: "SO", "Statues": "Status_2026", "Status Manu": "Stage_2026"}
+    # Col K (index 10) is the dedicated per-item Stage override — plain cells, no formula.
+    # Col E ("Status Manu") is an ARRAYFORMULA VLOOKUP from Order Status by SO, so it is
+    # SO-level (all items of an SO share the same value). Col K takes priority; fall back
+    # to col E when col K is blank (i.e. the item was never explicitly set per-item).
+    k_col   = "_col10" if "_col10" in d.columns else (heads[10] if len(heads) > 10 else None)
+    ren = {so_col: "SO", "Statues": "Status_2026", "Status Manu": "_stage_so"}
     if sku_col:
         ren[sku_col] = "Item Sku"
+    if k_col:
+        ren[k_col] = "_stage_item"
     d = d.rename(columns=ren)
-    for c in ("Item Sku", "Status_2026", "Stage_2026"):
+    for c in ("Item Sku", "Status_2026", "_stage_so", "_stage_item"):
         if c not in d.columns:
             d[c] = ""
+    # Per-item col K wins; fall back to SO-level col E
+    d["Stage_2026"] = d["_stage_item"].where(
+        d["_stage_item"].astype(str).str.strip() != "", d["_stage_so"])
     d = d[d["SO"].astype(str).str.strip().astype(bool)]
     if d.empty:
         return empty
