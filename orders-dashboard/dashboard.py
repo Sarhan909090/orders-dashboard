@@ -1620,15 +1620,13 @@ with tab_tracker:
             "Item Note":       st.column_config.TextColumn("Item Note", width="medium"),
             "Item QTY":        st.column_config.NumberColumn("Qty", width="small"),
             "Order Status":    st.column_config.TextColumn("Order Status", width="small"),
-            "Production Stage": st.column_config.SelectboxColumn(
-                "Production Stage", options=STAGE_OPTS, required=False, width="medium",
-            ),
+            "Production Stage": st.column_config.TextColumn("Production Stage", width="medium"),
             "SLA Basis":       st.column_config.TextColumn("SLA Basis", width="small"),
             "SLA Status":      st.column_config.TextColumn("SLA Status", width="small"),
             "SLA Countdown":   st.column_config.TextColumn("SLA Countdown", width="small"),
             "SLA Deadline":    st.column_config.TextColumn("SLA Deadline", width="small"),
         },
-        disabled=[c for c in display_df.columns if c not in ("Status", "Production Stage")],
+        disabled=list(display_df.columns),   # view-only — Production Stage is synced from the 2026 sheet
         hide_index=True,
         use_container_width=True,
         height=900,        # taller section
@@ -1636,54 +1634,9 @@ with tab_tracker:
         key="tracker_editor",
     )
 
-    # ── Detect per-ITEM Production Stage changes and offer a single Save button ─
-    # Per-item: writes target exactly (SO, Item Sku) in the 2026 tab so other
-    # items of the same SO are untouched. The Order Status tab stays SO-level
-    # and is not written from here (it's only used for SO-default fallbacks /
-    # bulk actions). 2026 takes precedence on read.
-    if "Production Stage" in table_view.columns and "Item Sku" in table_view.columns:
-        orig_g = table_view["Production Stage"].fillna("").reset_index(drop=True)
-        new_g  = edited["Production Stage"].fillna("").reset_index(drop=True)
-
-        changed_mask = (new_g != orig_g)
-        _extra_cols = [c for c in ["Item Name"] if c in edited.columns]
-        changed_items = edited[changed_mask.values][["SO", "Item Sku", "Production Stage"] + _extra_cols].copy()
-
-        if not changed_items.empty:
-            if st.button(f"💾 Save {len(changed_items):,} change(s)",
-                         type="primary", key="tr_save_all"):
-                with st.spinner("Saving…"):
-                    errors = []
-
-                    def _clean(v):
-                        # SelectboxColumn returns None for the blank option; coerce to ""
-                        return "" if (v is None or str(v) == "None") else str(v)
-
-                    item_updates = [
-                        {
-                            "SO":               str(r["SO"]).strip(),
-                            "Item Sku":         str(r["Item Sku"]).strip(),
-                            "Item Name":        str(r.get("Item Name", "")).strip(),
-                            "Production Stage": _clean(r["Production Stage"]),
-                        }
-                        for _, r in changed_items.iterrows()
-                        if str(r.get("SO", "")).strip()
-                    ]
-                    try:
-                        write_production_status_items(PROD_SHEET, item_updates)
-                    except Exception as e:
-                        errors.append(f"2026 sheet write failed: {e}")
-
-                if errors:
-                    st.error("Some saves failed:\n" + "\n".join(errors))
-                else:
-                    n_so = changed_items["SO"].nunique()
-                    st.success(
-                        f"Saved {len(changed_items):,} item change(s) across "
-                        f"{n_so:,} order(s). Refreshing…"
-                    )
-                    st.cache_data.clear()
-                    st.rerun()
+    # Production Stage is view-only here — it's synced from the 2026 sheet
+    # (per SO + Item Sku). Edit it directly in the 2026 sheet; the tracker
+    # reflects the change on the next refresh. No write-back from this table.
 
     # ── Revision check: delivered but not marked Completed ─────────────────
     st.divider()
