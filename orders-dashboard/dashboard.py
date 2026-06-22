@@ -1280,6 +1280,33 @@ with tab_tracker:
         tdf.drop(columns="_mkey", inplace=True)
         for c in ("Status_2026", "Stage_2026"):
             tdf[c] = tdf[c].fillna("")
+
+        # Prefix fallback: a 2026 SKU is often the short form of a tracker SKU
+        # (e.g. "05LOVA02-T" vs "05LOVA02-T : 05LOVA02-RI-04"), so exact mkey
+        # misses it. Fill any still-blank stage by prefix-matching within the SO.
+        _need = tdf["Stage_2026"].astype(str).str.strip() == ""
+        if _need.any():
+            _by_so: dict = {}
+            for _, _e in _s26.iterrows():
+                _sk = str(_e["Item Sku"]).strip()
+                _stg = str(_e["Stage_2026"]).strip()
+                if _sk and _stg:
+                    _by_so.setdefault(_e["SO"], []).append(
+                        (_sk, str(_e["Status_2026"]).strip(), _stg))
+            for _so in _by_so:                       # longest SKU first → most specific
+                _by_so[_so].sort(key=lambda x: len(x[0]), reverse=True)
+
+            def _prefix_fill(row):
+                if str(row["Stage_2026"]).strip():
+                    return pd.Series([row["Status_2026"], row["Stage_2026"]])
+                _t = str(row["Item Sku"]).strip()
+                for _sk, _stt, _stg in _by_so.get(row["SO"], []):
+                    if _t and (_t.startswith(_sk) or _sk.startswith(_t)):
+                        return pd.Series([_stt, _stg])
+                return pd.Series([row["Status_2026"], row["Stage_2026"]])
+
+            tdf[["Status_2026", "Stage_2026"]] = tdf.apply(_prefix_fill, axis=1)
+
         tdf["Status"] = tdf["Status_2026"].where(
             tdf["Status_2026"].str.strip() != "", tdf["Status"])
         tdf["Production Stage"] = tdf["Stage_2026"].where(
